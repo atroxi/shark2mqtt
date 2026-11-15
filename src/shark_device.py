@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -385,6 +386,41 @@ class SharkVacuum:
         val = self._get_prop(PROP_GET_SCHEDULE)
         return val if isinstance(val, dict) and val else None
 
+    def _active_areas(self) -> dict[str, Any]:
+        """Parse GET_AreasToClean_V3 (a JSON string); {} when idle or unparsable.
+
+        The robot reverts the value to "*" once it docks, so this is only
+        meaningful during (or just after) a room clean.
+        """
+        raw = self._get_prop("GET_AreasToClean_V3")
+        if isinstance(raw, dict):
+            return raw
+        if not raw or not isinstance(raw, str) or raw.strip() == "*":
+            return {}
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @property
+    def active_rooms(self) -> list[str]:
+        """Display names of the rooms in the current/last room clean."""
+        areas = self._active_areas().get("areas_to_clean", {})
+        if isinstance(areas, dict):
+            robot_rooms = [r for lst in areas.values() if isinstance(lst, list) for r in lst]
+        elif isinstance(areas, list):
+            # Legacy "Mode:Room" list format
+            robot_rooms = [str(r).split(":", 1)[-1] for r in areas]
+        else:
+            robot_rooms = []
+        return [self.room_name_map.get(r, r) for r in robot_rooms]
+
+    @property
+    def active_clean_type(self) -> str:
+        """"dry" or "wet" for the current/last room clean, "" if unknown."""
+        return str(self._active_areas().get("cleantype", ""))
+
     # --- MQTT payloads ---
 
     def to_state_payload(self) -> dict[str, Any]:
@@ -424,6 +460,9 @@ class SharkVacuum:
         if self.rooms:
             attrs["rooms"] = self.rooms
             attrs["floor_id"] = self.floor_id
+        if self.has_areas_v3:
+            attrs["active_rooms"] = self.active_rooms
+            attrs["active_clean_type"] = self.active_clean_type
         if self.schedule:
             attrs["schedule"] = self.schedule
         return attrs
