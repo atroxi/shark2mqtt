@@ -11,10 +11,13 @@ with an "areas" list whose entries carry "area_meta_data" ("UserRoom:..." or
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 import math
+import struct
 import sys
+import zlib
 from typing import Any
 
 # Colour-blind-friendly, muted fills so labels stay readable.
@@ -23,6 +26,94 @@ _PALETTE = [
     "#f4a261", "#cdb4db", "#ffafcc", "#bde0fe", "#d4e09b",
     "#fcd5ce", "#c7b9ff",
 ]
+
+
+# --- Occupancy grid (mapStatePbFloorBase64String) ---------------------------
+# The MARD embeds a protobuf with a one-byte-per-cell occupancy grid. Field
+# numbers below were worked out from an RV2820ZEUS map, so everything here is
+# best-effort and returns None on any surprise. Room "points" are in the same
+# cell coordinates, so the grid can sit directly under the room outlines.
+
+
+def _varint(buf: bytes, i: int) -> tuple[int, int]:
+    result = shift = 0
+    while True:
+        c = buf[i]
+        i += 1
+        result |= (c & 0x7F) << shift
+        shift += 7
+        if c < 0x80:
+            return result, i
+
+
+def _pb_fields(buf: bytes) -> list[tuple[int, bytes | int]]:
+    out: list[tuple[int, bytes | int]] = []
+    i = 0
+    while i < len(buf):
+        key, i = _varint(buf, i)
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            val, i = _varint(buf, i)
+            out.append((field, val))
+        elif wire == 2:
+            ln, i = _varint(buf, i)
+            out.append((field, buf[i:i + ln]))
+            i += ln
+        elif wire == 5:
+            out.append((field, buf[i:i + 4]))
+            i += 4
+        elif wire == 1:
+            out.append((field, buf[i:i + 8]))
+            i += 8
+        else:
+            break
+    return out
+
+
+def parse_grid(data: dict[str, Any]) -> tuple[int, int, bytes] | None:
+    """Return (width, height, cells) from the embedded occupancy grid, or None."""
+    b64 = data.get("mapStatePbFloorBase64String")
+    if not isinstance(b64, str) or not b64:
+        return None
+    try:
+        top = _pb_fields(base64.b64decode(b64))
+        layer = next(v for f, v in top if f == 5 and isinstance(v, bytes))
+        sub = _pb_fields(layer)
+        width = next(v for f, v in sub if f == 3 and isinstance(v, int))
+        height = next(v for f, v in sub if f == 4 and isinstance(v, int))
+        cells = next(v for f, v in sub if f == 6 and isinstance(v, bytes))
+    except (StopIteration, ValueError, IndexError):
+        return None
+    if width <= 0 or height <= 0 or len(cells) != width * height:
+        return None
+    return width, height, cells
+
+
+def _png_rgba(width: int, height: int, rgba: bytes) -> bytes:
+    def chunk(tag: bytes, body: bytes) -> bytes:
+        crc = zlib.crc32(tag + body) & 0xFFFFFFFF
+        return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", crc)
+
+    raw = b"".join(
+        b"\x00" + rgba[y * width * 4:(y + 1) * width * 4] for y in range(height)
+    )
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+
+
+def grid_png(width: int, height: int, cells: bytes) -> bytes:
+    """Colour the grid: 75 unknown (transparent), <=15 free floor, >=80 wall."""
+    free = bytes((0x2E, 0x34, 0x45, 0xFF))
+    wall = bytes((0xA7, 0xB0, 0xC4, 0xFF))
+    none = bytes((0, 0, 0, 0))
+    lut = {}
+    for v in range(256):
+        lut[v] = free if v <= 20 else (wall if v >= 80 and v != 75 else none)
+    return _png_rgba(width, height, b"".join(lut[c] for c in cells))
 
 
 def _outline(area: dict[str, Any]) -> list[tuple[float, float]]:
@@ -67,11 +158,15 @@ def render_svg(
     *,
     width: int = 800,
     rotate: float | None = None,
+    flip_x: bool = True,
+    with_grid: bool = False,
     margin: int = 20,
     highlight: set[str] | None = None,
 ) -> str:
     """Return an SVG string for the map.
 
+    with_grid: also draw the occupancy grid (walls/obstacles) under the rooms.
+    flip_x: mirror left-right (on by default; pass --no-flip-x on the CLI to disable).
     rotate: degrees; defaults to data["map_rotation"] when present and numeric.
     highlight: user room names to draw in a stronger colour (e.g. active rooms).
     """
@@ -89,7 +184,8 @@ def render_svg(
         if len(poly) < 3:
             continue
         # Shark map coordinates are y-up; SVG is y-down, so mirror vertically.
-        poly = [(x, -y) for x, y in poly]
+        # flip_x matches the Shark app's orientation on the RV2820 maps seen so far.
+        poly = [(-x if flip_x else x, -y) for x, y in poly]
         if rotate:
             poly = [_rotate(p, rotate) for p in poly]
         kind = meta.split(":", 1)[0]
@@ -123,6 +219,21 @@ def render_svg(
         "</pattern></defs>",
         f'<rect width="{width}" height="{height}" fill="#1f2430"/>',
     ]
+
+    grid = parse_grid(data) if (with_grid and not rotate) else None
+    if grid is not None:
+        gw, gh, cells = grid
+        uri = "data:image/png;base64," + base64.b64encode(grid_png(gw, gh, cells)).decode()
+        # Cell (x, y) maps exactly like a polygon vertex (x, y), so one affine
+        # transform places the whole grid: X = sx*x + ex, Y = -scale*y + fy.
+        sx = -scale if flip_x else scale
+        ex = margin - minx * scale
+        fy = margin - miny * scale
+        out.append(f'<g transform="matrix({sx:.5f} 0 0 {-scale:.5f} {ex:.2f} {fy:.2f})">')
+        out.append(
+            f'<image href="{uri}" x="0" y="0" width="{gw}" height="{gh}" '
+            'image-rendering="pixelated" opacity="0.9"/></g>'
+        )
 
     room_i = 0
     labels: list[tuple[float, float, str]] = []
@@ -164,6 +275,8 @@ def render_bytes(body: bytes, **kw: Any) -> str:
 
 
 def main(argv: list[str]) -> int:
+    flip_x = "--no-flip-x" not in argv
+    with_grid = "--grid" in argv
     args = [a for a in argv if not a.startswith("--")]
     rotate = None
     for i, a in enumerate(argv):
@@ -171,10 +284,10 @@ def main(argv: list[str]) -> int:
             rotate = float(argv[i + 1])
             args = [x for x in args if x != argv[i + 1]]
     if len(args) != 2:
-        print("usage: python -m src.map_render in.json out.svg [--rotate DEG]")
+        print("usage: python -m src.map_render in.json out.svg [--rotate DEG] [--no-flip-x] [--grid]")
         return 2
     with open(args[0], "rb") as fh:
-        svg = render_bytes(fh.read(), rotate=rotate)
+        svg = render_bytes(fh.read(), rotate=rotate, flip_x=flip_x, with_grid=with_grid)
     with open(args[1], "w", encoding="utf-8") as fh:
         fh.write(svg)
     print(f"wrote {args[1]}")
