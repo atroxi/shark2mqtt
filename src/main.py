@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 
 from typing import Any
@@ -81,6 +82,29 @@ class CommandRouter:
         )
 
 
+def _debug_save_mard(body: bytes, dsn: str) -> None:
+    """DEBUG helper: save the raw MARD and a rendered SVG to the data volume.
+
+    Writes mard_<dsn>.json and map_<dsn>.svg into MARD_DUMP_DIR (default
+    /data) so the room outlines can be inspected or the map re-rendered
+    offline. Never raises: this must not affect normal operation.
+    """
+    try:
+        from .map_render import render_bytes
+
+        out_dir = os.environ.get("MARD_DUMP_DIR", "/data")
+        safe = "".join(c for c in dsn if c.isalnum() or c in "-_")
+        raw_path = os.path.join(out_dir, f"mard_{safe}.json")
+        with open(raw_path, "wb") as fh:
+            fh.write(body)
+        svg_path = os.path.join(out_dir, f"map_{safe}.svg")
+        with open(svg_path, "w", encoding="utf-8") as fh:
+            fh.write(render_bytes(body))
+        logger.debug("Saved MARD to %s and rendered map to %s", raw_path, svg_path)
+    except Exception:
+        logger.debug("Saving MARD debug files failed", exc_info=True)
+
+
 async def _fetch_skegox_mard(
     api: SkegoxApi, dsn: str, product_name: str,
 ) -> MardData:
@@ -107,6 +131,7 @@ async def _fetch_skegox_mard(
             product_name, dsn, len(body),
         )
         debug_dump_mard_structure(body, product_name, source="Skegox MARD")
+        _debug_save_mard(body, dsn)
     return parse_mard(body, product_name, dsn, source="Skegox MARD")
 
 
