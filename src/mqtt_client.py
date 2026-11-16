@@ -32,6 +32,7 @@ class MqttClient:
         self._water_flow_overrides: dict[str, str] = {}  # device_id -> user-set flow level
         self._published_rooms: dict[str, set[str]] = {}  # device_id -> room slugs
         self._discovery_sigs: dict[str, str] = {}  # device_id -> last published signature
+        self._map_sigs: dict[str, str] = {}  # device_id -> last published map signature
 
     async def __aenter__(self) -> MqttClient:
         will = aiomqtt.Will(
@@ -439,6 +440,53 @@ class MqttClient:
         self._discovery_sigs[dsn] = sig
 
         logger.info("Published HA discovery for %s (%s)", device.product_name, dsn)
+
+
+    async def publish_map(self, device: SharkVacuum, mard_body: bytes | None) -> None:
+        """Publish the floor-plan SVG as an HA MQTT image entity.
+
+        Re-rendered only when the MARD or the set of active rooms changes,
+        so a normal poll costs nothing. Rooms being cleaned are raised and
+        highlighted. Failures are logged and never affect the poll loop.
+        """
+        if not mard_body:
+            return
+        try:
+            from .map_render import render_bytes
+
+            active = list(device.active_rooms)
+            sig = f"{len(mard_body)}:{hash(mard_body)}:{'|'.join(sorted(active))}"
+            dsn = device.dsn
+            if self._map_sigs.get(dsn) == sig:
+                return
+            svg = render_bytes(mard_body, highlight=set(active))
+
+            uid = f"shark2mqtt_{dsn}"
+            slug = re.sub(r"[^a-z0-9]+", "_", device.product_name.lower()).strip("_")
+            await self._publish(
+                f"{HA_DISCOVERY_PREFIX}/image/{uid}_map/config",
+                {
+                    "name": "Map",
+                    "unique_id": f"{uid}_map",
+                    "object_id": f"{slug}_map",
+                    "image_topic": f"{self._prefix}/{dsn}/map",
+                    "content_type": "image/svg+xml",
+                    "availability_topic": f"{self._prefix}/{dsn}/available",
+                    "payload_available": "online",
+                    "payload_not_available": "offline",
+                    "icon": "mdi:map",
+                    "device": device.device_info,
+                },
+                retain=True,
+            )
+            await self._publish(f"{self._prefix}/{dsn}/map", svg, retain=True)
+            self._map_sigs[dsn] = sig
+            logger.info(
+                "Published map for %s (active rooms: %s)",
+                device.product_name, active or "none",
+            )
+        except Exception:
+            logger.warning("Map render/publish failed for %s", device.dsn, exc_info=True)
 
     # --- State publishing ---
 

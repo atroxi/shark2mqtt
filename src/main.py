@@ -82,6 +82,11 @@ class CommandRouter:
         )
 
 
+# Raw MARD bodies by device DSN, kept so the map can be rendered without
+# refetching. Filled by _fetch_skegox_mard.
+_mard_bodies: dict[str, bytes] = {}
+
+
 def _debug_save_mard(body: bytes, dsn: str) -> None:
     """DEBUG helper: save the raw MARD and a rendered SVG to the data volume.
 
@@ -125,6 +130,7 @@ async def _fetch_skegox_mard(
             "Skegox MARD for %s (%s): not available", product_name, dsn,
         )
         return MardData({}, [], None)
+    _mard_bodies[dsn] = body
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(
             "Skegox MARD fetched for %s (%s): %d bytes",
@@ -222,6 +228,10 @@ async def poll_loop(
                 devices_map[device.dsn] = device
                 await mqtt.publish_discovery(device)
                 await mqtt.publish_state(device, prev_error=prev_errors)
+                try:
+                    await mqtt.publish_map(device, _mard_bodies.get(device.dsn))
+                except Exception:
+                    logger.debug("publish_map failed", exc_info=True)
                 prev_errors[device.dsn] = device.error_code
                 if device.ha_state != "docked":
                     any_active = True

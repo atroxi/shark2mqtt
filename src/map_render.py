@@ -160,11 +160,16 @@ def render_svg(
     rotate: float | None = None,
     flip_x: bool = True,
     with_grid: bool = False,
+    iso: bool = True,
+    yaw: float = 28.0,
+    pitch: float = 0.6,
     margin: int = 20,
     highlight: set[str] | None = None,
 ) -> str:
     """Return an SVG string for the map.
 
+    iso: draw angled, extruded 3D rooms (default); False gives the flat plan.
+    yaw/pitch: iso view rotation in degrees and vertical squash (0-1).
     with_grid: also draw the occupancy grid (walls/obstacles) under the rooms.
     flip_x: mirror left-right (on by default; pass --no-flip-x on the CLI to disable).
     rotate: degrees; defaults to data["map_rotation"] when present and numeric.
@@ -174,6 +179,11 @@ def render_svg(
         mr = data.get("map_rotation")
         rotate = float(mr) if isinstance(mr, (int, float)) else 0.0
     highlight = highlight or set()
+    if iso:
+        return _render_iso(
+            data, width=width, rotate=rotate, flip_x=flip_x, yaw=yaw,
+            pitch=pitch, margin=margin, highlight=highlight,
+        )
 
     shapes: list[tuple[str, str, list[tuple[float, float]]]] = []
     for area in data.get("areas", []):
@@ -270,6 +280,167 @@ def render_svg(
     return "\n".join(out)
 
 
+# --- Angled, extruded ("subtle 3D") renderer --------------------------------
+
+
+def _mix(hex_a: str, hex_b: str, t: float) -> str:
+    """Blend hex_a toward hex_b by t (0..1)."""
+    a = [int(hex_a[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(hex_b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(a, b))
+
+
+def _render_iso(
+    data: dict[str, Any],
+    *,
+    width: int,
+    rotate: float,
+    flip_x: bool,
+    yaw: float,
+    pitch: float,
+    margin: int,
+    highlight: set[str],
+) -> str:
+    rooms: list[tuple[str, list[tuple[float, float]]]] = []
+    nogos: list[list[tuple[float, float]]] = []
+    for area in data.get("areas", []):
+        if not isinstance(area, dict):
+            continue
+        poly = _outline(area)
+        if len(poly) < 3:
+            continue
+        # Same orientation fixes as the flat plan: y-up data, app-style mirror.
+        poly = [(-x if flip_x else x, -y) for x, y in poly]
+        if rotate:
+            poly = [_rotate(p, rotate) for p in poly]
+        # Camera: spin the plan by yaw, then squash vertically for tilt.
+        poly = [_rotate(p, yaw) for p in poly]
+        poly = [(x, y * pitch) for x, y in poly]
+        meta = str(area.get("area_meta_data", ""))
+        if meta.startswith("UserNoGo"):
+            nogos.append(poly)
+        else:
+            name = str(area.get("user_room_name") or area.get("robot_room_name") or "")
+            rooms.append((name, poly))
+
+    if not rooms:
+        return (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60">'
+            '<text x="10" y="35" font-size="14">No map data</text></svg>'
+        )
+
+    allpts = [p for _, poly in rooms for p in poly] + [p for poly in nogos for p in poly]
+    minx = min(p[0] for p in allpts)
+    maxx = max(p[0] for p in allpts)
+    miny = min(p[1] for p in allpts)
+    maxy = max(p[1] for p in allpts)
+    scale = (width - 2 * margin) / max(maxx - minx, 1e-6)
+
+    h_low = width * 0.026
+    h_high = width * 0.062
+    any_active = any(name in highlight for name, _ in rooms)
+    top_room = h_high if any_active else h_low
+    # Headroom for the tallest extrusion on top, a little for shadows below.
+    top_pad = margin + top_room
+    height = int((maxy - miny) * scale + top_pad + margin + h_low)
+
+    def tx(p: tuple[float, float]) -> tuple[float, float]:
+        return (p[0] - minx) * scale + margin, (p[1] - miny) * scale + top_pad
+
+    out = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
+        f'height="{height}" viewBox="0 0 {width} {height}">',
+        '<defs>'
+        '<filter id="glow" x="-30%" y="-30%" width="160%" height="160%">'
+        '<feGaussianBlur stdDeviation="7"/></filter>'
+        '<pattern id="nogo" width="8" height="8" patternUnits="userSpaceOnUse" '
+        'patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" '
+        'stroke="#d62828" stroke-width="3"/></pattern></defs>',
+        f'<rect width="{width}" height="{height}" fill="#1f2430"/>',
+    ]
+
+    for poly in nogos:
+        pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in map(tx, poly))
+        out.append(
+            f'<polygon points="{pts}" fill="url(#nogo)" stroke="#d62828" stroke-width="2"/>'
+        )
+
+    # Back-to-front by the room's ground-plane centroid.
+    placed = []
+    for i, (name, poly) in enumerate(rooms):
+        screen = [tx(p) for p in poly]
+        cx, cy = _centroid(screen)
+        placed.append((cy, i, name, screen, (cx, cy)))
+    placed.sort()
+
+    labels: list[tuple[float, float, str, bool]] = []
+    for _, i, name, screen, (cx, cy) in placed:
+        active = name in highlight
+        base = _PALETTE[i % len(_PALETTE)]
+        if any_active and not active:
+            base = _mix(base, "#5c6370", 0.55)  # recede
+        h = h_high if active else h_low
+        top = _mix(base, "#ffffff", 0.0)
+        if active:
+            top = _mix("#ff9800", "#ffffff", 0.18)
+        side = _mix(top, "#10131a", 0.42)
+        stroke = "#ffd9a0" if active else _mix(top, "#10131a", 0.35)
+
+        # Soft ground shadow, offset away from the "light".
+        sh = " ".join(f"{x + h * 0.45:.1f},{y + h * 0.3:.1f}" for x, y in screen)
+        out.append(f'<polygon points="{sh}" fill="#000" fill-opacity="0.28"/>')
+
+        area_sign = 0.0
+        n = len(screen)
+        for k in range(n):
+            x0, y0 = screen[k]
+            x1, y1 = screen[(k + 1) % n]
+            area_sign += x0 * y1 - x1 * y0
+
+        edges = []
+        for k in range(n):
+            x0, y0 = screen[k]
+            x1, y1 = screen[(k + 1) % n]
+            dx, dy = x1 - x0, y1 - y0
+            ny = -dx if area_sign > 0 else dx  # outward normal's y component
+            if ny > 1e-9:  # faces the viewer
+                edges.append(((y0 + y1) / 2, (x0, y0, x1, y1)))
+        edges.sort()
+        for _, (x0, y0, x1, y1) in edges:
+            quad = (
+                f"{x0:.1f},{y0:.1f} {x1:.1f},{y1:.1f} "
+                f"{x1:.1f},{y1 - h:.1f} {x0:.1f},{y0 - h:.1f}"
+            )
+            out.append(
+                f'<polygon points="{quad}" fill="{side}" stroke="{side}" '
+                'stroke-width="0.8" stroke-linejoin="round"/>'
+            )
+
+        up = " ".join(f"{x:.1f},{y - h:.1f}" for x, y in screen)
+        if active:
+            out.append(
+                f'<polygon points="{up}" fill="none" stroke="#ff9800" '
+                'stroke-width="10" stroke-opacity="0.85" filter="url(#glow)"/>'
+            )
+        out.append(
+            f'<polygon points="{up}" fill="{top}" stroke="{stroke}" '
+            f'stroke-width="{2.5 if active else 1.5}" stroke-linejoin="round"/>'
+        )
+        labels.append((cx, cy - h, name, active))
+
+    font = max(11, min(18, int(width / 45)))
+    for cx, cy, name, active in labels:
+        out.append(
+            f'<text x="{cx:.1f}" y="{cy:.1f}" font-family="sans-serif" '
+            f'font-size="{font}" font-weight="700" fill="#1f2430" '
+            'text-anchor="middle" dominant-baseline="middle" stroke="#ffffff" '
+            f'stroke-width="3" stroke-opacity="0.85" paint-order="stroke">'
+            f"{html.escape(name)}</text>"
+        )
+    out.append("</svg>")
+    return "\n".join(out)
+
+
 def render_bytes(body: bytes, **kw: Any) -> str:
     return render_svg(json.loads(body.decode("utf-8")), **kw)
 
@@ -277,17 +448,25 @@ def render_bytes(body: bytes, **kw: Any) -> str:
 def main(argv: list[str]) -> int:
     flip_x = "--no-flip-x" not in argv
     with_grid = "--grid" in argv
+    flat = "--flat" in argv
+    active: set[str] = set()
+    for i, a in enumerate(argv):
+        if a == "--highlight" and i + 1 < len(argv):
+            active = {n for n in argv[i + 1].split(",") if n}
     args = [a for a in argv if not a.startswith("--")]
     rotate = None
     for i, a in enumerate(argv):
         if a == "--rotate" and i + 1 < len(argv):
             rotate = float(argv[i + 1])
             args = [x for x in args if x != argv[i + 1]]
+        if a == "--highlight" and i + 1 < len(argv):
+            args = [x for x in args if x != argv[i + 1]]
     if len(args) != 2:
-        print("usage: python -m src.map_render in.json out.svg [--rotate DEG] [--no-flip-x] [--grid]")
+        print("usage: python -m src.map_render in.json out.svg [--rotate DEG] [--no-flip-x] [--grid] [--flat] [--highlight 'Kitchen,Office']")
         return 2
     with open(args[0], "rb") as fh:
-        svg = render_bytes(fh.read(), rotate=rotate, flip_x=flip_x, with_grid=with_grid)
+        svg = render_bytes(fh.read(), rotate=rotate, flip_x=flip_x, with_grid=with_grid,
+            iso=not flat, highlight=active)
     with open(args[1], "w", encoding="utf-8") as fh:
         fh.write(svg)
     print(f"wrote {args[1]}")
