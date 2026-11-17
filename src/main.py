@@ -163,16 +163,21 @@ async def _handle_live_location(
     elif device.dsn not in live_switched:
         live_switched.add(device.dsn)
         if not switch:
-            try:
-                await api.set_desired_property(device.dsn, "live_location_switch", 1)
-                logger.info(
-                    "Enabled live_location_switch for %s", device.product_name,
-                )
-            except Exception:
-                logger.warning(
-                    "Could not set live_location_switch for %s",
-                    device.product_name, exc_info=True,
-                )
+            # The first attempt (integer 1 on the switch) was accepted by
+            # the cloud but never reflected back by the robot. The reported
+            # properties are booleans, so try real booleans, and also ask
+            # for live_location itself.
+            for prop in ("live_location_switch", "live_location"):
+                try:
+                    await api.set_desired_property(device.dsn, prop, True)
+                    logger.info(
+                        "Requested %s=true for %s", prop, device.product_name,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not set %s for %s",
+                        prop, device.product_name, exc_info=True,
+                    )
 
     snapshot = (value, switch, props.get("GET_reloc_status"),
                 props.get("GET_LocalizationStatus"))
