@@ -100,3 +100,13 @@ def test_render_coverage_swath_and_caption():
     assert svg.count("<polyline") == 1  # a single swath stroke, no thin line
     assert "#26c6da" in svg
     assert "Last clean: 21 min" in svg
+
+
+def test_mode_label():
+    from src.run_path import mode_label
+
+    assert mode_label("dry", True, True) == "Vacuum + mop"
+    assert mode_label("dry", True, False) == "Mop"
+    assert mode_label("wet", False, True) == "Vacuum"
+    assert mode_label("wet") == "Mop"
+    assert mode_label("dry") == "Vacuum"

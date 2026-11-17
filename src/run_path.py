@@ -24,6 +24,8 @@ class RunPath(NamedTuple):
     start_ts: int | None
     minutes: int | None
     area_m2: float | None = None  # summary field 3, in 0.01 m^2 (checked against the route)
+    rooms: tuple[str, ...] = ()  # rooms requested for the run (not in the file)
+    mode: str = ""  # "Vacuum", "Mop" or "Vacuum + mop" (not in the file)
 
 
 def _float(b: Any) -> float | None:
@@ -61,3 +63,23 @@ def parse_run_file(body: bytes) -> RunPath | None:
     except (StopIteration, ValueError, IndexError):
         pass
     return RunPath(points, start_ts, minutes, area)
+
+
+def mode_label(clean_type: str, wet: bool | None = None, dry: bool | None = None) -> str:
+    """Human label for how a run cleaned: Vacuum, Mop or Vacuum + mop.
+
+    ``wet``/``dry`` come from the shadow's CleaningParameters when present;
+    otherwise the AreasToClean ``cleantype`` ("dry"/"wet") decides.
+    """
+    if wet and dry:
+        return "Vacuum + mop"
+    if wet:
+        return "Mop"
+    if dry:
+        return "Vacuum"
+    kind = (clean_type or "").lower()
+    if kind == "wet":
+        return "Mop"
+    if kind == "dry":
+        return "Vacuum"
+    return kind.capitalize()

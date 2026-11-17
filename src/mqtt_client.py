@@ -517,7 +517,10 @@ class MqttClient:
         never affect the poll loop.
         """
         dsn = device.dsn
-        sig = f"{run.start_ts}:{len(run.points)}:{run.minutes}:{run.area_m2}"
+        sig = (
+            f"{run.start_ts}:{len(run.points)}:{run.minutes}:{run.area_m2}"
+            f":{run.mode}:{'|'.join(run.rooms)}"
+        )
         if mard_body:
             sig += f":{len(mard_body)}:{hash(mard_body)}"
         if self._run_sigs.get(dsn) == sig:
@@ -544,6 +547,14 @@ class MqttClient:
                  {"unit_of_measurement": "m²", "icon": "mdi:ruler-square",
                   "state_class": "measurement"}),
             )
+            sensors += (
+                ("last_clean_rooms", "Last Clean Rooms", "rooms_text",
+                 {"icon": "mdi:floor-plan",
+                  "json_attributes_topic": topic,
+                  "json_attributes_template":
+                      "{{ {'rooms': value_json.rooms, 'mode': value_json.mode,"
+                      " 'rooms_by_mode': value_json.rooms_by_mode} | tojson }}"}),
+            )
             for key, name, field, extra in sensors:
                 await self._publish(
                     f"{HA_DISCOVERY_PREFIX}/sensor/{uid}_{key}/config",
@@ -564,7 +575,15 @@ class MqttClient:
             )
             await self._publish(
                 topic,
-                {"start": start, "minutes": run.minutes, "area_m2": run.area_m2},
+                {
+                    "start": start,
+                    "minutes": run.minutes,
+                    "area_m2": run.area_m2,
+                    "rooms": list(run.rooms),
+                    "rooms_text": ", ".join(run.rooms),
+                    "mode": run.mode,
+                    "rooms_by_mode": [f"{r} - {run.mode}" for r in run.rooms],
+                },
                 retain=True,
             )
 

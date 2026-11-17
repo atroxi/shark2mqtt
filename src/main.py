@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import signal
+import time
 
 from typing import Any
 
@@ -16,7 +18,7 @@ from .ayla_api import AylaApi, MardData, debug_dump_mard_structure, parse_mard
 from .config import Settings
 from .exc import SharkAuthError
 from .mqtt_client import MqttClient
-from .run_path import RunPath, parse_run_file
+from .run_path import RunPath, mode_label, parse_run_file
 from .shark_auth import SharkAuth
 from .shark_device import SharkVacuum
 from .skegox_api import SkegoxApi
@@ -92,6 +94,68 @@ _mard_bodies: dict[str, bytes] = {}
 _run_trails: dict[str, RunPath] = {}
 _trail_labels: dict[str, str] = {}
 
+# What the current/last outing was asked to clean, captured while the robot is
+# out (AreasToClean_V3 reverts to "*" once it docks, and the run file itself
+# doesn't say). Attached to the run when its file arrives.
+_outings: dict[str, dict[str, Any]] = {}
+
+
+def _track_outing(device: SharkVacuum) -> None:
+    """Remember which rooms/mode the robot is out cleaning."""
+    info = _outings.get(device.dsn)
+    if device.ha_state == "docked":
+        if info:
+            info["closed"] = True
+        return
+    rooms = [r for r in device.active_rooms if r and r != "*"]
+    if not rooms:
+        return
+    wet = dry = None
+    raw = device._get_prop("GET_CleaningParameters")
+    try:
+        params = json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(params, dict):
+            wet, dry = bool(params.get("Wet")), bool(params.get("Dry"))
+    except (ValueError, TypeError):
+        pass
+    if info is None or info.get("closed"):
+        info = {"first_seen": time.time(), "closed": False}
+        _outings[device.dsn] = info
+    info.update(
+        rooms=list(rooms),
+        mode=mode_label(device.active_clean_type, wet, dry),
+    )
+
+
+def _run_info_path(dsn: str) -> str:
+    out_dir = os.environ.get("MARD_DUMP_DIR", "/data")
+    safe = "".join(c for c in dsn if c.isalnum() or c in "-_")
+    return os.path.join(out_dir, f"last_run_{safe}.json")
+
+
+def _attach_run_info(device: SharkVacuum, run: RunPath) -> RunPath:
+    """Add rooms/mode to a freshly decoded run, persisting them by start time."""
+    info = _outings.get(device.dsn)
+    start = run.start_ts or 0
+    if info and info.get("rooms") and info["first_seen"] >= start - 600:
+        saved = {"start_ts": run.start_ts, "rooms": info["rooms"], "mode": info["mode"]}
+        try:
+            with open(_run_info_path(device.dsn), "w", encoding="utf-8") as fh:
+                json.dump(saved, fh)
+        except OSError:
+            logger.debug("Saving last-run info failed", exc_info=True)
+        return run._replace(rooms=tuple(info["rooms"]), mode=info["mode"])
+    try:  # e.g. after a restart: reuse what was saved for this same run
+        with open(_run_info_path(device.dsn), encoding="utf-8") as fh:
+            saved = json.load(fh)
+        if saved.get("start_ts") == run.start_ts and saved.get("rooms"):
+            return run._replace(
+                rooms=tuple(saved["rooms"]), mode=str(saved.get("mode", "")),
+            )
+    except (OSError, ValueError):
+        pass
+    return run
+
 
 async def _update_run_trail(api: SkegoxApi, device: SharkVacuum) -> None:
     """Refresh the device's last-run route when the robot uploaded a new one."""
@@ -116,11 +180,13 @@ async def _update_run_trail(api: SkegoxApi, device: SharkVacuum) -> None:
         logger.info("Run file %s for %s had no usable route", name, device.product_name)
         _trail_labels[device.dsn] = label  # don't retry a file we can't decode
         return
+    run = _attach_run_info(device, run)
     _run_trails[device.dsn] = run
     _trail_labels[device.dsn] = label
     logger.info(
-        "Run trail updated for %s: %d points (%s min) from %s",
-        device.product_name, len(run.points), run.minutes, name,
+        "Run trail updated for %s: %d points (%s min, %s: %s) from %s",
+        device.product_name, len(run.points), run.minutes,
+        run.mode or "mode unknown", ", ".join(run.rooms) or "rooms unknown", name,
     )
 
 
@@ -410,6 +476,7 @@ async def poll_loop(
                 await mqtt.publish_state(device, prev_error=prev_errors)
                 try:
                     if config.run_trail:
+                        _track_outing(device)
                         await _update_run_trail(api, device)
                     run = _run_trails.get(device.dsn)
                     await mqtt.publish_map(
