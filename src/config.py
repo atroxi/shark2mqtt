@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     poll_interval: int = 300
     poll_interval_active: int = 20
 
+    # Draw the robot's last cleaning route on the map image. The robot uploads
+    # the route when a clean finishes; it is fetched whenever it changes.
+    run_trail: bool = True
+
     # Experimental: ask the robot to stream its live position while it is
     # off the dock (sets the shadow's live_location_switch). Values are
     # logged at DEBUG so the format can be worked out.

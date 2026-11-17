@@ -16,6 +16,7 @@ from .ayla_api import AylaApi, MardData, debug_dump_mard_structure, parse_mard
 from .config import Settings
 from .exc import SharkAuthError
 from .mqtt_client import MqttClient
+from .run_path import RunPath, parse_run_file
 from .shark_auth import SharkAuth
 from .shark_device import SharkVacuum
 from .skegox_api import SkegoxApi
@@ -85,6 +86,42 @@ class CommandRouter:
 # Raw MARD bodies by device DSN, kept so the map can be rendered without
 # refetching. Filled by _fetch_skegox_mard.
 _mard_bodies: dict[str, bytes] = {}
+
+# Last cleaning route per device (from the Visual_Floor_1 run file) and the
+# fileList label it was decoded from, so it is refetched only when it changes.
+_run_trails: dict[str, RunPath] = {}
+_trail_labels: dict[str, str] = {}
+
+
+async def _update_run_trail(api: SkegoxApi, device: SharkVacuum) -> None:
+    """Refresh the device's last-run route when the robot uploaded a new one."""
+    files = device._properties.get("GET_fileList")
+    entry = files.get("Visual_Floor_1") if isinstance(files, dict) else None
+    if not isinstance(entry, dict):
+        return
+    val = entry.get("value")
+    name = val.get("fileName") if isinstance(val, dict) else val
+    if not name:
+        return
+    label = f"{name}@{entry.get('updatedAt')}"
+    if _trail_labels.get(device.dsn) == label:
+        return
+    try:
+        body = await api.fetch_property_file(device.dsn, "Visual_Floor_1")
+    except Exception:
+        logger.debug("Run trail fetch failed for %s", device.dsn, exc_info=True)
+        return
+    run = parse_run_file(body) if body else None
+    if run is None:
+        logger.info("Run file %s for %s had no usable route", name, device.product_name)
+        _trail_labels[device.dsn] = label  # don't retry a file we can't decode
+        return
+    _run_trails[device.dsn] = run
+    _trail_labels[device.dsn] = label
+    logger.info(
+        "Run trail updated for %s: %d points (%s min) from %s",
+        device.product_name, len(run.points), run.minutes, name,
+    )
 
 
 def _debug_save_mard(body: bytes, dsn: str) -> None:
@@ -372,7 +409,13 @@ async def poll_loop(
                 await mqtt.publish_discovery(device)
                 await mqtt.publish_state(device, prev_error=prev_errors)
                 try:
-                    await mqtt.publish_map(device, _mard_bodies.get(device.dsn))
+                    if config.run_trail:
+                        await _update_run_trail(api, device)
+                    run = _run_trails.get(device.dsn)
+                    await mqtt.publish_map(
+                        device, _mard_bodies.get(device.dsn),
+                        trail=run.points if run else None,
+                    )
                 except Exception:
                     logger.debug("publish_map failed", exc_info=True)
                 prev_errors[device.dsn] = device.error_code

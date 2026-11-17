@@ -89,6 +89,46 @@ def parse_grid(data: dict[str, Any]) -> tuple[int, int, bytes] | None:
     return width, height, cells
 
 
+def grid_frame(data: dict[str, Any]) -> tuple[float, float, float, int] | None:
+    """Return (resolution_m, origin_x_m, origin_y_m, width_cells) of the grid.
+
+    Room outline points are in this grid's cell coordinates; the robot's own
+    route is in metres in the same frame, but x is mirrored (see trail code).
+    """
+    b64 = data.get("mapStatePbFloorBase64String")
+    if not isinstance(b64, str) or not b64:
+        return None
+    try:
+        top = _pb_fields(base64.b64decode(b64))
+        layer = next(v for f, v in top if f == 5 and isinstance(v, bytes))
+        sub = _pb_fields(layer)
+        res = struct.unpack("<f", next(v for f, v in sub if f == 1))[0]
+        origin = _pb_fields(next(v for f, v in sub if f == 2))
+        ox = struct.unpack("<f", next(v for f, v in origin if f == 1))[0]
+        oy = struct.unpack("<f", next(v for f, v in origin if f == 2))[0]
+        width = next(v for f, v in sub if f == 3 and isinstance(v, int))
+    except (StopIteration, ValueError, IndexError, struct.error):
+        return None
+    if res <= 0 or width <= 0:
+        return None
+    return res, ox, oy, width
+
+
+def trail_cells(
+    data: dict[str, Any], points: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Convert route points (metres) to room-outline cell coordinates.
+
+    Verified against a real run: y maps directly, x is mirrored across the
+    grid width. Returns [] if the grid frame can't be read.
+    """
+    frame = grid_frame(data)
+    if frame is None:
+        return []
+    res, ox, oy, width = frame
+    return [(width - (x - ox) / res, (y - oy) / res) for x, y in points]
+
+
 def _png_rgba(width: int, height: int, rgba: bytes) -> bytes:
     def chunk(tag: bytes, body: bytes) -> bytes:
         crc = zlib.crc32(tag + body) & 0xFFFFFFFF
@@ -165,6 +205,7 @@ def render_svg(
     pitch: float = 0.6,
     margin: int = 20,
     highlight: set[str] | None = None,
+    trail: list[tuple[float, float]] | None = None,
 ) -> str:
     """Return an SVG string for the map.
 
@@ -174,6 +215,7 @@ def render_svg(
     flip_x: mirror left-right (on by default; pass --no-flip-x on the CLI to disable).
     rotate: degrees; defaults to data["map_rotation"] when present and numeric.
     highlight: user room names to draw in a stronger colour (e.g. active rooms).
+    trail: the robot's last route in metres (iso view only); drawn on the floor.
     """
     if rotate is None:
         mr = data.get("map_rotation")
@@ -182,7 +224,7 @@ def render_svg(
     if iso:
         return _render_iso(
             data, width=width, rotate=rotate, flip_x=flip_x, yaw=yaw,
-            pitch=pitch, margin=margin, highlight=highlight,
+            pitch=pitch, margin=margin, highlight=highlight, trail=trail,
         )
 
     shapes: list[tuple[str, str, list[tuple[float, float]]]] = []
@@ -300,6 +342,7 @@ def _render_iso(
     pitch: float,
     margin: int,
     highlight: set[str],
+    trail: list[tuple[float, float]] | None = None,
 ) -> str:
     rooms: list[tuple[str, list[tuple[float, float]]]] = []
     nogos: list[list[tuple[float, float]]] = []
@@ -430,6 +473,36 @@ def _render_iso(
             f'stroke-width="{2.5 if active else 1.5}" stroke-linejoin="round"/>'
         )
         labels.append((cx, cy - h, name, active))
+
+    if trail:
+        cells = trail_cells(data, trail)
+        route = []
+        for p in cells:
+            p = (-p[0] if flip_x else p[0], -p[1])
+            if rotate:
+                p = _rotate(p, rotate)
+            p = _rotate(p, yaw)
+            p = (p[0], p[1] * pitch)
+            x, y = tx(p)
+            route.append((x, y - h_low))
+        if len(route) >= 2:
+            pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in route)
+            for stroke, sw, op in (("#10131a", 5, 0.55), ("#4dd0e1", 2.5, 0.95)):
+                out.append(
+                    f'<polyline points="{pts}" fill="none" stroke="{stroke}" '
+                    f'stroke-width="{sw}" stroke-opacity="{op}" '
+                    'stroke-linejoin="round" stroke-linecap="round"/>'
+                )
+            sx, sy = route[0]
+            ex, ey = route[-1]
+            out.append(
+                f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="6" fill="#66bb6a" '
+                'stroke="#10131a" stroke-width="2"/>'
+            )
+            out.append(
+                f'<circle cx="{ex:.1f}" cy="{ey:.1f}" r="6" fill="#ef5350" '
+                'stroke="#10131a" stroke-width="2"/>'
+            )
 
     font = max(11, min(18, int(width / 45)))
     for cx, cy, name, active in labels:
