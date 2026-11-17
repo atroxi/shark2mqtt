@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import signal
+import time
 
 from typing import Any
 
@@ -141,11 +142,64 @@ async def _fetch_skegox_mard(
     return parse_mard(body, product_name, dsn, source="Skegox MARD")
 
 
+async def _probe_ayla_rt_map(
+    ayla_api: AylaApi,
+    device: SharkVacuum,
+    docked: bool,
+    last_ayla: dict[str, dict[str, Any]],
+) -> None:
+    """Experimental: ask for the Ayla real-time map and log what changes.
+
+    Writes ``SET_Enable_RT_Map`` / ``SET_RTMapPeriod`` / ``SET_RTMapSendUntil``
+    once per outing, then logs every Ayla property whose value changed since
+    the last poll (INFO) so a live position or map stream is easy to spot.
+    """
+    dsn = ayla_api.dsn_by_snd.get(device.dsn)
+    if not dsn:
+        return
+    try:
+        if not docked and device.dsn not in last_ayla:
+            until = int(time.time()) + 3600
+            for name, val in (
+                ("SET_Enable_RT_Map", 1),
+                ("SET_RTMapPeriod", 5),
+                ("SET_RTMapSendUntil", until),
+            ):
+                try:
+                    await ayla_api.set_device_property(dsn, name, val)
+                    logger.info("Ayla RT map: set %s=%s", name, val)
+                except Exception:
+                    logger.warning(
+                        "Ayla RT map: could not set %s", name, exc_info=True,
+                    )
+        props = await ayla_api.get_device_properties(dsn)
+        current = {
+            p["property"]["name"]: p["property"].get("value")
+            for p in props if "property" in p
+        }
+        prev = last_ayla.get(device.dsn)
+        if prev is not None:
+            for name, val in sorted(current.items()):
+                if prev.get(name) != val:
+                    logger.info(
+                        "Ayla property changed: %s %r -> %r",
+                        name, str(prev.get(name))[:120], str(val)[:200],
+                    )
+        last_ayla[device.dsn] = current
+        if docked:
+            # Re-arm for the next outing.
+            last_ayla.pop(device.dsn, None)
+    except Exception:
+        logger.debug("Ayla RT map probe failed", exc_info=True)
+
+
 async def _handle_live_location(
     api: SkegoxApi,
+    ayla_api: AylaApi,
     device: SharkVacuum,
     live_switched: set[str],
     last_live: dict[str, Any],
+    last_ayla: dict[str, dict[str, Any]],
 ) -> None:
     """Experimental: turn on the robot's live position stream while it is out.
 
@@ -178,6 +232,10 @@ async def _handle_live_location(
                         "Could not set %s for %s",
                         prop, device.product_name, exc_info=True,
                     )
+
+    await _probe_ayla_rt_map(
+        ayla_api, device, docked, last_ayla,
+    )
 
     snapshot = (value, switch, props.get("GET_reloc_status"),
                 props.get("GET_LocalizationStatus"))
@@ -212,6 +270,7 @@ async def poll_loop(
     # have already switched on this outing, and the last value logged.
     live_switched: set[str] = set()
     last_live: dict[str, Any] = {}
+    last_ayla: dict[str, dict[str, Any]] = {}
 
     while True:
         any_active = False
@@ -290,7 +349,8 @@ async def poll_loop(
                     any_active = True
                 if config.live_location:
                     await _handle_live_location(
-                        api, device, live_switched, last_live,
+                        api, ayla_api, device, live_switched, last_live,
+                        last_ayla,
                     )
 
             # --- Ayla fallback (only when skegox has no devices) ---
@@ -414,6 +474,8 @@ async def run(config: Settings) -> None:
             for v in ayla_vacuums:
                 bsn = v._properties.get("GET_Battery_Serial_Num", "")
                 snd = bsn.split("-")[-1] if "-" in bsn else ""
+                if snd:
+                    ayla_api.dsn_by_snd[snd] = v.dsn
                 if snd and v.rooms:
                     ayla_room_data[snd] = (v.floor_id, v.rooms)
                     logger.info("Ayla room fallback for %s: %s", snd, v.rooms)

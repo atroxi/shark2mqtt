@@ -197,6 +197,9 @@ class AylaApi:
         self._refresh_token: str | None = None
         self._token_expiry: datetime | None = None
         self._session: aiohttp.ClientSession | None = None
+        # Skegox SND -> Ayla DSN, filled at startup (used by the
+        # experimental LIVE_LOCATION real-time-map probe).
+        self.dsn_by_snd: dict[str, str] = {}
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
