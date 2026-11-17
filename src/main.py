@@ -490,7 +490,10 @@ def main() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    logger.info("shark2mqtt starting")
+    logger.info(
+        "shark2mqtt starting (live_location=%s, poll_interval=%ss, active=%ss)",
+        config.live_location, config.poll_interval, config.poll_interval_active,
+    )
     asyncio.run(run(config))
 
 
