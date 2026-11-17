@@ -7,7 +7,6 @@ import asyncio
 import logging
 import os
 import signal
-import time
 
 from typing import Any
 
@@ -142,68 +141,53 @@ async def _fetch_skegox_mard(
     return parse_mard(body, product_name, dsn, source="Skegox MARD")
 
 
-async def _probe_ayla_rt_map(
-    ayla_api: AylaApi,
+def _log_file_list(
     device: SharkVacuum,
-    docked: bool,
-    last_ayla: dict[str, dict[str, Any]],
+    last_files: dict[str, dict[str, str]],
 ) -> None:
-    """Experimental: ask for the Ayla real-time map and log what changes.
+    """Experimental: log every entry of the shadow's ``fileList`` on change.
 
-    Writes ``SET_Enable_RT_Map`` / ``SET_RTMapPeriod`` / ``SET_RTMapSendUntil``
-    once per outing, then logs every Ayla property whose value changed since
-    the last poll (INFO) so a live position or map stream is easy to spot.
+    The debug dump truncates this property. It lists files the robot has
+    uploaded (MARD, logs, floor maps, ...); a run map or path file showing
+    up during a clean would hold the route the robot took.
     """
-    dsn = ayla_api.dsn_by_snd.get(device.dsn)
-    if not dsn:
+    raw = device._properties.get("GET_fileList")
+    if not isinstance(raw, dict):
         return
-    try:
-        if not docked and device.dsn not in last_ayla:
-            until = int(time.time()) + 3600
-            for name, val in (
-                ("SET_Enable_RT_Map", 1),
-                ("SET_RTMapPeriod", 5),
-                ("SET_RTMapSendUntil", until),
-            ):
-                try:
-                    await ayla_api.set_device_property(dsn, name, val)
-                    logger.info("Ayla RT map: set %s=%s", name, val)
-                except Exception:
-                    logger.warning(
-                        "Ayla RT map: could not set %s", name, exc_info=True,
-                    )
-        props = await ayla_api.get_device_properties(dsn)
-        current = {
-            p["property"]["name"]: p["property"].get("value")
-            for p in props if "property" in p
-        }
-        prev = last_ayla.get(device.dsn)
-        if prev is not None:
-            for name, val in sorted(current.items()):
-                if prev.get(name) != val:
-                    logger.info(
-                        "Ayla property changed: %s %r -> %r",
-                        name, str(prev.get(name))[:120], str(val)[:200],
-                    )
-        last_ayla[device.dsn] = current
-        if docked:
-            # Re-arm for the next outing.
-            last_ayla.pop(device.dsn, None)
-    except Exception:
-        logger.debug("Ayla RT map probe failed", exc_info=True)
+    current: dict[str, str] = {}
+    for key, entry in raw.items():
+        if isinstance(entry, dict):
+            val = entry.get("value")
+            name = val.get("fileName") if isinstance(val, dict) else val
+            current[key] = f"{name} @ {entry.get('updatedAt')}"
+        else:
+            current[key] = str(entry)
+    prev = last_files.get(device.dsn)
+    if prev is None:
+        logger.info(
+            "fileList for %s: %s", device.product_name,
+            "; ".join(f"{k}={v}" for k, v in sorted(current.items())),
+        )
+    else:
+        for key, val in sorted(current.items()):
+            if prev.get(key) != val:
+                logger.info(
+                    "fileList changed for %s: %s: %s -> %s",
+                    device.product_name, key, prev.get(key), val,
+                )
+    last_files[device.dsn] = current
 
 
 async def _handle_live_location(
     api: SkegoxApi,
-    ayla_api: AylaApi,
     device: SharkVacuum,
     live_switched: set[str],
     last_live: dict[str, Any],
-    last_ayla: dict[str, dict[str, Any]],
+    last_files: dict[str, dict[str, str]],
 ) -> None:
     """Experimental: turn on the robot's live position stream while it is out.
 
-    Sets the shadow's ``live_location_switch`` to 1 once per outing (when the
+    Sets the shadow's ``live_location_switch`` and ``live_location`` once per outing (when the
     robot leaves the dock) and logs every change of ``live_location`` and
     related properties so the payload format can be identified.
     """
@@ -233,9 +217,7 @@ async def _handle_live_location(
                         prop, device.product_name, exc_info=True,
                     )
 
-    await _probe_ayla_rt_map(
-        ayla_api, device, docked, last_ayla,
-    )
+    _log_file_list(device, last_files)
 
     snapshot = (value, switch, props.get("GET_reloc_status"),
                 props.get("GET_LocalizationStatus"))
@@ -270,7 +252,7 @@ async def poll_loop(
     # have already switched on this outing, and the last value logged.
     live_switched: set[str] = set()
     last_live: dict[str, Any] = {}
-    last_ayla: dict[str, dict[str, Any]] = {}
+    last_files: dict[str, dict[str, str]] = {}
 
     while True:
         any_active = False
@@ -349,8 +331,8 @@ async def poll_loop(
                     any_active = True
                 if config.live_location:
                     await _handle_live_location(
-                        api, ayla_api, device, live_switched, last_live,
-                        last_ayla,
+                        api, device, live_switched, last_live,
+                        last_files,
                     )
 
             # --- Ayla fallback (only when skegox has no devices) ---
@@ -474,8 +456,6 @@ async def run(config: Settings) -> None:
             for v in ayla_vacuums:
                 bsn = v._properties.get("GET_Battery_Serial_Num", "")
                 snd = bsn.split("-")[-1] if "-" in bsn else ""
-                if snd:
-                    ayla_api.dsn_by_snd[snd] = v.dsn
                 if snd and v.rooms:
                     ayla_room_data[snd] = (v.floor_id, v.rooms)
                     logger.info("Ayla room fallback for %s: %s", snd, v.rooms)
