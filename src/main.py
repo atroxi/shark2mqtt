@@ -141,7 +141,8 @@ async def _fetch_skegox_mard(
     return parse_mard(body, product_name, dsn, source="Skegox MARD")
 
 
-def _log_file_list(
+async def _log_file_list(
+    api: SkegoxApi,
     device: SharkVacuum,
     last_files: dict[str, dict[str, str]],
 ) -> None:
@@ -176,6 +177,54 @@ def _log_file_list(
                     device.product_name, key, prev.get(key), val,
                 )
     last_files[device.dsn] = current
+
+    # Download the run-related files when first seen and whenever they change.
+    changed = [
+        key for key in _RUN_FILE_KEYS
+        if current.get(key) and (prev is None or prev.get(key) != current[key])
+    ]
+    for key in changed:
+        await _dump_run_file(api, device, key, current[key])
+
+
+_RUN_FILE_KEYS = ("Cleaning_Statistics", "Visual_Floor_1", "Persistent_Floor_1")
+
+
+async def _dump_run_file(
+    api: SkegoxApi, device: SharkVacuum, key: str, label: str,
+) -> None:
+    """Experimental: fetch a run file, save it to /data and log its shape.
+
+    Small files (<=6 KB) are logged in full as base64 so they can be
+    decoded from a pasted log; larger ones are saved and summarised.
+    """
+    import base64
+
+    try:
+        body = await api.fetch_property_file(device.dsn, key)
+    except Exception:
+        logger.warning("Fetching %s failed", key, exc_info=True)
+        return
+    if not body:
+        logger.info("No content for %s (%s)", key, label)
+        return
+    out_dir = os.environ.get("MARD_DUMP_DIR", "/data")
+    fname = label.split(" @ ")[0] or key
+    safe = "".join(c for c in fname if c.isalnum() or c in "-_.")
+    path = os.path.join(out_dir, f"{device.dsn}_{key}_{safe}")
+    try:
+        with open(path, "wb") as fh:
+            fh.write(body)
+    except Exception:
+        logger.debug("Saving %s failed", path, exc_info=True)
+    logger.info(
+        "Run file %s (%s): %d bytes saved to %s; first 64 hex: %s",
+        key, label, len(body), path, body[:64].hex(),
+    )
+    if len(body) <= 6144:
+        logger.info(
+            "Run file %s base64: %s", key, base64.b64encode(body).decode(),
+        )
 
 
 async def _handle_live_location(
@@ -217,7 +266,7 @@ async def _handle_live_location(
                         prop, device.product_name, exc_info=True,
                     )
 
-    _log_file_list(device, last_files)
+    await _log_file_list(api, device, last_files)
 
     snapshot = (value, switch, props.get("GET_reloc_status"),
                 props.get("GET_LocalizationStatus"))
