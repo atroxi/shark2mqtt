@@ -339,7 +339,10 @@ def _render_iso(
     h_low = width * 0.026
     h_high = width * 0.062
     any_active = any(name in highlight for name, _ in rooms)
-    top_room = h_high if any_active else h_low
+    # Always reserve headroom for a raised room so the canvas size and every
+    # room's position stay identical whether or not a room is highlighted
+    # (lets dashboards overlay fixed tap targets on the map).
+    top_room = h_high
     # Headroom for the tallest extrusion on top, a little for shadows below.
     top_pad = margin + top_room
     height = int((maxy - miny) * scale + top_pad + margin + h_low)
