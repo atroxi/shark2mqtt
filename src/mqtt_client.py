@@ -12,6 +12,7 @@ import aiomqtt
 
 if TYPE_CHECKING:
     from .config import Settings
+    from .run_path import RunPath
     from .shark_device import SharkVacuum
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class MqttClient:
         self._published_rooms: dict[str, set[str]] = {}  # device_id -> room slugs
         self._discovery_sigs: dict[str, str] = {}  # device_id -> last published signature
         self._map_sigs: dict[str, str] = {}  # device_id -> last published map signature
+        self._run_sigs: dict[str, str] = {}  # device_id -> last published run summary signature
 
     async def __aenter__(self) -> MqttClient:
         will = aiomqtt.Will(
@@ -503,6 +505,104 @@ class MqttClient:
             )
         except Exception:
             logger.warning("Map render/publish failed for %s", device.dsn, exc_info=True)
+
+    async def publish_last_run(
+        self, device: SharkVacuum, mard_body: bytes | None, run: RunPath,
+    ) -> None:
+        """Publish the last clean's summary sensors and coverage picture.
+
+        Sensors: start time, duration, cleaned area. The coverage image is the
+        floor plan with the robot's route drawn as a 0.3 m swath. Only
+        republished when the run (or map) changes. Failures are logged and
+        never affect the poll loop.
+        """
+        dsn = device.dsn
+        sig = f"{run.start_ts}:{len(run.points)}:{run.minutes}:{run.area_m2}"
+        if mard_body:
+            sig += f":{len(mard_body)}:{hash(mard_body)}"
+        if self._run_sigs.get(dsn) == sig:
+            return
+        try:
+            from datetime import UTC, datetime
+
+            uid = f"shark2mqtt_{dsn}"
+            slug = re.sub(r"[^a-z0-9]+", "_", device.product_name.lower()).strip("_")
+            avail = {
+                "availability_topic": f"{self._prefix}/{dsn}/available",
+                "payload_available": "online",
+                "payload_not_available": "offline",
+                "device": device.device_info,
+            }
+            topic = f"{self._prefix}/{dsn}/last_run"
+            sensors = (
+                ("last_clean_start", "Last Clean Start", "start",
+                 {"device_class": "timestamp", "icon": "mdi:clock-start"}),
+                ("last_clean_duration", "Last Clean Duration", "minutes",
+                 {"device_class": "duration", "unit_of_measurement": "min",
+                  "state_class": "measurement"}),
+                ("last_clean_area", "Last Clean Area", "area_m2",
+                 {"unit_of_measurement": "m²", "icon": "mdi:ruler-square",
+                  "state_class": "measurement"}),
+            )
+            for key, name, field, extra in sensors:
+                await self._publish(
+                    f"{HA_DISCOVERY_PREFIX}/sensor/{uid}_{key}/config",
+                    {
+                        "name": name,
+                        "unique_id": f"{uid}_{key}",
+                        "object_id": f"{slug}_{key}",
+                        "state_topic": topic,
+                        "value_template": "{{ value_json." + field + " }}",
+                        **extra,
+                        **avail,
+                    },
+                    retain=True,
+                )
+            start = (
+                datetime.fromtimestamp(run.start_ts, UTC).isoformat()
+                if run.start_ts else None
+            )
+            await self._publish(
+                topic,
+                {"start": start, "minutes": run.minutes, "area_m2": run.area_m2},
+                retain=True,
+            )
+
+            if mard_body:
+                from .map_render import render_bytes
+
+                bits = []
+                if run.minutes is not None:
+                    bits.append(f"{run.minutes} min")
+                if run.area_m2 is not None:
+                    bits.append(f"{run.area_m2:.1f} m²")
+                svg = render_bytes(
+                    mard_body, trail=run.points, coverage_swath=0.3,
+                    caption="Last clean: " + ", ".join(bits) if bits else None,
+                )
+                await self._publish(
+                    f"{HA_DISCOVERY_PREFIX}/image/{uid}_coverage/config",
+                    {
+                        "name": "Last Clean Coverage",
+                        "unique_id": f"{uid}_coverage",
+                        "object_id": f"{slug}_coverage",
+                        "image_topic": f"{self._prefix}/{dsn}/coverage",
+                        "content_type": "image/svg+xml",
+                        "icon": "mdi:vacuum",
+                        **avail,
+                    },
+                    retain=True,
+                )
+                await self._publish(
+                    f"{self._prefix}/{dsn}/coverage", svg, retain=True,
+                )
+            self._run_sigs[dsn] = sig
+            logger.info(
+                "Published last run for %s (%s min, %s m²)",
+                device.product_name, run.minutes, run.area_m2,
+            )
+        except Exception:
+            logger.warning("Last-run publish failed for %s", dsn, exc_info=True)
 
     # --- State publishing ---
 

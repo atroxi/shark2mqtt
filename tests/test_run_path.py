@@ -31,7 +31,7 @@ def _field(num: int, wire: int, payload: bytes | int) -> bytes:
 def _run_file(points: list[tuple[int, int]], scale: float = 0.002) -> bytes:
     data = b"".join(struct.pack("<hhh", x, y, 0) for x, y in points)
     path = _field(1, 5, struct.pack("<f", scale)) + _field(3, 2, data)
-    summary = _field(1, 0, 1794891392) + _field(2, 0, 21)
+    summary = _field(1, 0, 1794891392) + _field(2, 0, 21) + _field(3, 0, 1520)
     return _field(10, 2, path) + _field(11, 2, summary)
 
 
@@ -63,6 +63,7 @@ def test_parse_run_file():
     run = parse_run_file(_run_file([(0, 0), (500, -250), (1000, 0)]))
     assert run is not None
     assert run.start_ts == 1794891392 and run.minutes == 21
+    assert run.area_m2 == 15.2
     assert run.points[1] == pytest.approx((1.0, -0.5), abs=1e-4)
 
 
@@ -88,3 +89,14 @@ def test_render_draws_trail():
     assert "<polyline" not in plain
     assert with_trail.count("<polyline") == 2  # outline + coloured stroke
     assert with_trail.count("<circle") == 2  # start and end markers
+
+
+def test_render_coverage_swath_and_caption():
+    mard = _mard()
+    svg = render_svg(
+        mard, trail=[(-8.0, 0.0), (-7.0, 0.5), (-6.0, 0.0)],
+        coverage_swath=0.3, caption="Last clean: 21 min",
+    )
+    assert svg.count("<polyline") == 1  # a single swath stroke, no thin line
+    assert "#26c6da" in svg
+    assert "Last clean: 21 min" in svg

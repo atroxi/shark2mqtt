@@ -416,6 +416,10 @@ async def poll_loop(
                         device, _mard_bodies.get(device.dsn),
                         trail=run.points if run else None,
                     )
+                    if run:
+                        await mqtt.publish_last_run(
+                            device, _mard_bodies.get(device.dsn), run,
+                        )
                 except Exception:
                     logger.debug("publish_map failed", exc_info=True)
                 prev_errors[device.dsn] = device.error_code

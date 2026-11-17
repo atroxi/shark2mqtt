@@ -206,6 +206,8 @@ def render_svg(
     margin: int = 20,
     highlight: set[str] | None = None,
     trail: list[tuple[float, float]] | None = None,
+    coverage_swath: float | None = None,
+    caption: str | None = None,
 ) -> str:
     """Return an SVG string for the map.
 
@@ -216,6 +218,9 @@ def render_svg(
     rotate: degrees; defaults to data["map_rotation"] when present and numeric.
     highlight: user room names to draw in a stronger colour (e.g. active rooms).
     trail: the robot's last route in metres (iso view only); drawn on the floor.
+    coverage_swath: with trail, draw the route as a swath this wide (metres)
+        on dimmed rooms, as a "cleaned coverage" picture instead of a thin line.
+    caption: short text drawn in the bottom-left corner (iso view only).
     """
     if rotate is None:
         mr = data.get("map_rotation")
@@ -225,6 +230,7 @@ def render_svg(
         return _render_iso(
             data, width=width, rotate=rotate, flip_x=flip_x, yaw=yaw,
             pitch=pitch, margin=margin, highlight=highlight, trail=trail,
+            coverage_swath=coverage_swath, caption=caption,
         )
 
     shapes: list[tuple[str, str, list[tuple[float, float]]]] = []
@@ -343,6 +349,8 @@ def _render_iso(
     margin: int,
     highlight: set[str],
     trail: list[tuple[float, float]] | None = None,
+    coverage_swath: float | None = None,
+    caption: str | None = None,
 ) -> str:
     rooms: list[tuple[str, list[tuple[float, float]]]] = []
     nogos: list[list[tuple[float, float]]] = []
@@ -423,7 +431,7 @@ def _render_iso(
     for _, i, name, screen, (cx, cy) in placed:
         active = name in highlight
         base = _PALETTE[i % len(_PALETTE)]
-        if any_active and not active:
+        if (any_active and not active) or (coverage_swath and trail):
             base = _mix(base, "#5c6370", 0.55)  # recede
         h = h_high if active else h_low
         top = _mix(base, "#ffffff", 0.0)
@@ -487,7 +495,16 @@ def _render_iso(
             route.append((x, y - h_low))
         if len(route) >= 2:
             pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in route)
-            for stroke, sw, op in (("#10131a", 5, 0.55), ("#4dd0e1", 2.5, 0.95)):
+            frame = grid_frame(data)
+            if coverage_swath and frame:
+                # One polyline, so overlapping passes don't double up. Screen
+                # width: swath in grid cells x px-per-cell, softened for the
+                # vertical squash of the iso view.
+                swath_px = coverage_swath / frame[0] * scale * (1 + pitch) / 2
+                layers = (("#26c6da", max(swath_px, 3.0), 0.7),)
+            else:
+                layers = (("#10131a", 5, 0.55), ("#4dd0e1", 2.5, 0.95))
+            for stroke, sw, op in layers:
                 out.append(
                     f'<polyline points="{pts}" fill="none" stroke="{stroke}" '
                     f'stroke-width="{sw}" stroke-opacity="{op}" '
@@ -505,6 +522,13 @@ def _render_iso(
             )
 
     font = max(11, min(18, int(width / 45)))
+    if caption:
+        out.append(
+            f'<text x="{margin}" y="{height - margin / 2:.0f}" '
+            'font-family="sans-serif" font-size="'
+            f'{font + 2}" font-weight="700" fill="#e6e9ef">'
+            f"{html.escape(caption)}</text>"
+        )
     for cx, cy, name, active in labels:
         out.append(
             f'<text x="{cx:.1f}" y="{cy:.1f}" font-family="sans-serif" '
