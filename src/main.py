@@ -141,6 +141,50 @@ async def _fetch_skegox_mard(
     return parse_mard(body, product_name, dsn, source="Skegox MARD")
 
 
+async def _handle_live_location(
+    api: SkegoxApi,
+    device: SharkVacuum,
+    live_switched: set[str],
+    last_live: dict[str, Any],
+) -> None:
+    """Experimental: turn on the robot's live position stream while it is out.
+
+    Sets the shadow's ``live_location_switch`` to 1 once per outing (when the
+    robot leaves the dock) and logs every change of ``live_location`` and
+    related properties so the payload format can be identified.
+    """
+    props = device._properties
+    switch = props.get("GET_live_location_switch")
+    value = props.get("GET_live_location")
+    docked = device.ha_state == "docked"
+
+    if docked:
+        live_switched.discard(device.dsn)
+    elif device.dsn not in live_switched:
+        live_switched.add(device.dsn)
+        if not switch:
+            try:
+                await api.set_desired_property(device.dsn, "live_location_switch", 1)
+                logger.info(
+                    "Enabled live_location_switch for %s", device.product_name,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not set live_location_switch for %s",
+                    device.product_name, exc_info=True,
+                )
+
+    snapshot = (value, switch, props.get("GET_reloc_status"),
+                props.get("GET_LocalizationStatus"))
+    if last_live.get(device.dsn) != snapshot:
+        last_live[device.dsn] = snapshot
+        logger.info(
+            "Live location for %s: live_location=%r live_location_switch=%r "
+            "reloc_status=%r LocalizationStatus=%r",
+            device.product_name, *snapshot,
+        )
+
+
 async def poll_loop(
     api: SkegoxApi,
     ayla_api: AylaApi,
@@ -159,6 +203,10 @@ async def poll_loop(
     # only changes on room edits/map saves, not per poll, so re-fetching
     # every cycle would waste API calls and S3 presigned URLs.
     skegox_mard_cache: dict[str, MardData] = {}
+    # Live-location tracking (experimental, LIVE_LOCATION=1): devices we
+    # have already switched on this outing, and the last value logged.
+    live_switched: set[str] = set()
+    last_live: dict[str, Any] = {}
 
     while True:
         any_active = False
@@ -235,6 +283,10 @@ async def poll_loop(
                 prev_errors[device.dsn] = device.error_code
                 if device.ha_state != "docked":
                     any_active = True
+                if config.live_location:
+                    await _handle_live_location(
+                        api, device, live_switched, last_live,
+                    )
 
             # --- Ayla fallback (only when skegox has no devices) ---
             # If a user reports missing devices, check whether skegox

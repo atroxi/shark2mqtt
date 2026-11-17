@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     poll_interval: int = 300
     poll_interval_active: int = 20
 
+    # Experimental: ask the robot to stream its live position while it is
+    # off the dock (sets the shadow's live_location_switch). Values are
+    # logged at DEBUG so the format can be worked out.
+    live_location: bool = False
+
     # Token persistence
     token_dir: str = "/data"
 

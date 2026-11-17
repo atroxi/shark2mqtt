@@ -73,6 +73,7 @@ volumes:
 | `MQTT_PREFIX` | No | `shark2mqtt` | MQTT topic prefix |
 | `POLL_INTERVAL` | No | `300` | Polling interval in seconds |
 | `POLL_INTERVAL_ACTIVE` | No | `20` | Polling interval while cleaning |
+| `LIVE_LOCATION` | No | `false` | Experimental: set the shadow's `live_location_switch` when the robot leaves the dock and log `live_location` changes (use with `LOG_LEVEL=DEBUG` to capture the payload) |
 | `TOKEN_DIR` | No | `/data` | Directory for persisted auth tokens |
 | `LOG_LEVEL` | No | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
 
