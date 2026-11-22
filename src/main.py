@@ -554,7 +554,10 @@ async def poll_loop(
                     run = _run_trails.get(device.dsn)
                     # The route lives on the coverage image, not the main map.
                     if config.map_image:
-                        await mqtt.publish_map(device, _mard_bodies.get(device.dsn))
+                        await mqtt.publish_map(
+                            device, _mard_bodies.get(device.dsn),
+                            robot_at=run.points if run else None,
+                        )
                     if run:
                         await mqtt.publish_last_run(
                             device, _mard_bodies.get(device.dsn), run,

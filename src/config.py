@@ -56,6 +56,9 @@ class Settings(BaseSettings):
 
     # Floor plan image entity (rendered from the robot's MARD room file)
     map_image: bool = True
+    # Colour scheme for the map and coverage images: "default" or
+    # "wasteland" (desert colours, with a truck as the robot marker).
+    map_theme: str = "default"
     # Accepted for compatibility (the add-on passes it); the 3D map renderer
     # doesn't draw the floor scan, so it currently has no effect.
     map_show_scan: bool = False

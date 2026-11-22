@@ -84,6 +84,7 @@ volumes:
 | `MOP_ROBOTS` | No | | Comma-separated robot names or DSNs that **do** mop, for when auto-detection misses one |
 | `AYLA_MERGE` | No | `false` | Half-migrated accounts: also publish robots that are only on the older Ayla backend (see [#46](https://github.com/CamSoper/shark2mqtt/issues/46)) |
 | `MAP_IMAGE` | No | `true` | Publish the floor plan image entity (see [Floor plan](#floor-plan)) |
+| `MAP_THEME` | No | `default` | Colour scheme for the map and coverage images: `default`, or `wasteland` (desert colours, with a truck as the robot marker) |
 | `MAP_SHOW_SCAN` | No | `false` | Accepted for compatibility; currently has no effect (the 3D map doesn't draw the floor scan) |
 
 See [`config.example.env`](config.example.env) for a ready-to-edit template.

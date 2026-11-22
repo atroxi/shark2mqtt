@@ -572,6 +572,7 @@ class MqttClient:
         device: SharkVacuum,
         mard_body: bytes | None,
         trail: list[tuple[float, float]] | None = None,
+        robot_at: list[tuple[float, float]] | None = None,
     ) -> None:
         """Publish the floor-plan SVG as an HA MQTT image entity.
 
@@ -579,7 +580,9 @@ class MqttClient:
         so a normal poll costs nothing. Rooms being cleaned are raised and
         highlighted. ``trail`` is the robot's last route (metres); it is drawn
         only while no room is being cleaned, so a stale route never overlays a
-        run in progress. Failures are logged and never affect the poll loop.
+        run in progress. ``robot_at`` (a route, in metres) places the robot
+        marker at its end on themes that draw one; it's dropped during a run
+        for the same reason. Failures are logged and never affect the poll loop.
         """
         if not mard_body:
             return
@@ -588,18 +591,23 @@ class MqttClient:
 
             active = list(device.active_rooms)
             if active:
-                trail = None
+                trail = robot_at = None
             trail_sig = (
                 f"{len(trail)}:{trail[0]}:{trail[-1]}" if trail else "none"
             )
+            robot_sig = f"{robot_at[-1]}" if robot_at else "none"
+            theme = self._config.map_theme
             sig = (
                 f"{len(mard_body)}:{hash(mard_body)}:{'|'.join(sorted(active))}"
-                f":{trail_sig}"
+                f":{trail_sig}:{robot_sig}:{theme}"
             )
             dsn = device.dsn
             if self._map_sigs.get(dsn) == sig:
                 return
-            svg = render_bytes(mard_body, highlight=set(active), trail=trail)
+            svg = render_bytes(
+                mard_body, highlight=set(active), trail=trail,
+                robot_at=robot_at, theme=theme,
+            )
 
             uid = f"shark2mqtt_{dsn}"
             slug = re.sub(r"[^a-z0-9]+", "_", device.product_name.lower()).strip("_")
@@ -721,7 +729,7 @@ class MqttClient:
                     bits.append(f"{run.area_m2:.1f} m²")
                 svg = render_bytes(
                     mard_body, trail=run.points, coverage_swath=0.3,
-                    crop_to_trail=True,
+                    crop_to_trail=True, theme=self._config.map_theme,
                     caption="Last clean: " + ", ".join(bits) if bits else None,
                 )
                 await self._publish(

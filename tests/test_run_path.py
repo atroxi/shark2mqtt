@@ -134,3 +134,41 @@ def test_mode_label():
     assert mode_label("wet", False, True) == "Vacuum"
     assert mode_label("wet") == "Mop"
     assert mode_label("dry") == "Vacuum"
+
+
+TRAIL = [(-8.0, 0.0), (-7.0, 0.5), (-6.0, 0.0)]
+
+
+def test_wasteland_theme_draws_truck_instead_of_end_dot():
+    from src.truck_icon import TRUCK_PATHS
+
+    mard = _mard()
+    svg = render_svg(mard, trail=TRAIL, theme="wasteland")
+    assert svg.count("<circle") == 1  # start marker only
+    assert TRUCK_PATHS[0][1] in svg  # the truck silhouette
+    assert "#140f0b" in svg  # wasteland background
+    default = render_svg(mard, trail=TRAIL)
+    assert default.count("<circle") == 2 and TRUCK_PATHS[0][1] not in default
+
+
+def test_robot_at_places_only_the_truck():
+    from src.truck_icon import TRUCK_PATHS
+
+    svg = render_svg(_mard(), robot_at=TRAIL, theme="wasteland")
+    assert TRUCK_PATHS[0][1] in svg
+    assert "<polyline" not in svg and "<circle" not in svg
+    # Default theme has no robot marker, so robot_at changes nothing there.
+    assert render_svg(_mard(), robot_at=TRAIL) == render_svg(_mard())
+
+
+def test_truck_faces_the_direction_of_travel():
+    import re
+
+    svg = render_svg(_mard(), robot_at=[(-8.0, 0.0), (-6.0, 0.0)], theme="wasteland")
+    back = render_svg(_mard(), robot_at=[(-6.0, 0.0), (-8.0, 0.0)], theme="wasteland")
+    turn = lambda s: float(re.search(r"rotate\((-?[\d.]+)\) scale", s).group(1))
+    assert abs(((turn(svg) - turn(back)) % 360) - 180) < 1  # opposite headings
+
+
+def test_unknown_theme_falls_back_to_default():
+    assert render_svg(_mard(), trail=TRAIL, theme="nope") == render_svg(_mard(), trail=TRAIL)

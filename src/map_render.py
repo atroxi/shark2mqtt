@@ -27,6 +27,66 @@ _PALETTE = [
     "#fcd5ce", "#c7b9ff",
 ]
 
+# Colour schemes for the iso renderer (MAP_THEME). "default" is the original
+# look; every key must be present in each theme.
+_THEMES: dict[str, dict[str, Any]] = {
+    "default": {
+        "bg": "#1f2430", "palette": _PALETTE, "recede": "#5c6370",
+        "active": "#ff9800", "active_stroke": "#ffd9a0",
+        "swath": "#26c6da", "route": "#4dd0e1", "start": "#66bb6a", "end": "#ef5350",
+        "caption": "#e6e9ef", "label": "#1f2430", "label_stroke": "#ffffff",
+        "truck": False,
+    },
+    # Desert dusk: earthy rooms, amber highlights, and the truck as the robot.
+    "wasteland": {
+        "bg": "#140f0b",
+        "palette": ["#a77a52", "#8f6a45", "#b48a5c", "#7f6448", "#9c7350",
+                    "#c09a68", "#86704f", "#a8865c", "#94704a", "#b9926a",
+                    "#7a5f45", "#a07c56"],
+        "recede": "#3a2a1f",
+        "active": "#e8a33d", "active_stroke": "#ffe0a8",
+        "swath": "#e8a33d", "route": "#ffe0a8", "start": "#9aae52", "end": "#d0402f",
+        "caption": "#e3cfa8", "label": "#1a120d", "label_stroke": "#f1e2c4",
+        "truck": True,
+    },
+}
+
+
+def _truck_marker(
+    x: float, y: float, heading: float, pitch: float, length: float,
+    halo: str = "#e8a33d",
+) -> str:
+    """The truck lying on the floor at (x, y), its front toward ``heading``.
+
+    heading: degrees in the unsquashed floor plane (0 = +x, 90 = +y, screen).
+    """
+    from .truck_icon import TRUCK_CENTRE, TRUCK_LENGTH, TRUCK_PATHS
+
+    k = length / TRUCK_LENGTH
+    cx, cy = TRUCK_CENTRE
+    body = "".join(f'<path d="{d}" fill="{c}" fill-rule="evenodd"/>' for c, d in TRUCK_PATHS)
+    # Icon front points to -x, so turn it a half-turn further than heading.
+    return (
+        f'<g transform="translate({x:.1f} {y:.1f}) scale(1 {pitch}) '
+        f'rotate({heading + 180:.1f}) scale({k:.4f}) translate({-cx:.1f} {-cy:.1f})">'
+        # A glow so the dark truck reads on light and dark rooms alike.
+        f'<ellipse cx="{cx:.1f}" cy="{cy:.1f}" rx="{TRUCK_LENGTH * 0.66:.1f}" '
+        f'ry="{TRUCK_LENGTH * 0.56:.1f}" fill="{halo}" fill-opacity="0.55" filter="url(#glow)"/>'
+        f'<ellipse cx="{cx:.1f}" cy="{cy:.1f}" rx="{TRUCK_LENGTH * 0.54:.1f}" '
+        f'ry="{TRUCK_LENGTH * 0.44:.1f}" fill="#000" fill-opacity="0.45"/>'
+        f"{body}</g>"
+    )
+
+
+def _heading(route: list[tuple[float, float]], pitch: float, min_px: float = 6.0) -> float:
+    """Floor-plane heading (degrees) at the end of a screen-space route."""
+    ex, ey = route[-1]
+    for px, py in reversed(route[:-1]):
+        dx, dy = ex - px, (ey - py) / pitch
+        if math.hypot(dx, dy) >= min_px:
+            return math.degrees(math.atan2(dy, dx))
+    return 0.0
+
 
 # --- Occupancy grid (mapStatePbFloorBase64String) ---------------------------
 # The MARD embeds a protobuf with a one-byte-per-cell occupancy grid. Field
@@ -209,6 +269,8 @@ def render_svg(
     coverage_swath: float | None = None,
     caption: str | None = None,
     crop_to_trail: bool = False,
+    theme: str = "default",
+    robot_at: list[tuple[float, float]] | None = None,
 ) -> str:
     """Return an SVG string for the map.
 
@@ -225,6 +287,12 @@ def render_svg(
     crop_to_trail: with trail, zoom the picture to the area the route covers
         (iso view only). The output keeps ``width``; its height follows the
         cropped area.
+    theme: colour scheme for the iso view, a key of ``_THEMES`` ("default",
+        "wasteland"); unknown names fall back to "default". Themes with a
+        truck draw it as the robot marker at the end of the route.
+    robot_at: a route in metres used only to place the robot marker at its
+        last position and heading (iso view, truck themes); nothing else of
+        it is drawn. Ignored when ``trail`` is given.
     """
     if rotate is None:
         mr = data.get("map_rotation")
@@ -235,7 +303,7 @@ def render_svg(
             data, width=width, rotate=rotate, flip_x=flip_x, yaw=yaw,
             pitch=pitch, margin=margin, highlight=highlight, trail=trail,
             coverage_swath=coverage_swath, caption=caption,
-            crop_to_trail=crop_to_trail,
+            crop_to_trail=crop_to_trail, theme=theme, robot_at=robot_at,
         )
 
     shapes: list[tuple[str, str, list[tuple[float, float]]]] = []
@@ -357,7 +425,10 @@ def _render_iso(
     coverage_swath: float | None = None,
     caption: str | None = None,
     crop_to_trail: bool = False,
+    theme: str = "default",
+    robot_at: list[tuple[float, float]] | None = None,
 ) -> str:
+    T = _THEMES.get(theme, _THEMES["default"])
     rooms: list[tuple[str, list[tuple[float, float]]]] = []
     nogos: list[list[tuple[float, float]]] = []
     for area in data.get("areas", []):
@@ -416,7 +487,7 @@ def _render_iso(
         '<pattern id="nogo" width="8" height="8" patternUnits="userSpaceOnUse" '
         'patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" '
         'stroke="#d62828" stroke-width="3"/></pattern></defs>',
-        f'<rect width="{width}" height="{height}" fill="#1f2430"/>',
+        f'<rect width="{width}" height="{height}" fill="{T["bg"]}"/>',
     ]
 
     for poly in nogos:
@@ -436,15 +507,15 @@ def _render_iso(
     labels: list[tuple[float, float, str, bool]] = []
     for _, i, name, screen, (cx, cy) in placed:
         active = name in highlight
-        base = _PALETTE[i % len(_PALETTE)]
+        base = T["palette"][i % len(T["palette"])]
         if (any_active and not active) or (coverage_swath and trail):
-            base = _mix(base, "#5c6370", 0.55)  # recede
+            base = _mix(base, T["recede"], 0.55)  # recede
         h = h_high if active else h_low
         top = _mix(base, "#ffffff", 0.0)
         if active:
-            top = _mix("#ff9800", "#ffffff", 0.18)
+            top = _mix(T["active"], "#ffffff", 0.18)
         side = _mix(top, "#10131a", 0.42)
-        stroke = "#ffd9a0" if active else _mix(top, "#10131a", 0.35)
+        stroke = T["active_stroke"] if active else _mix(top, "#10131a", 0.35)
 
         # Soft ground shadow, offset away from the "light".
         sh = " ".join(f"{x + h * 0.45:.1f},{y + h * 0.3:.1f}" for x, y in screen)
@@ -479,7 +550,7 @@ def _render_iso(
         up = " ".join(f"{x:.1f},{y - h:.1f}" for x, y in screen)
         if active:
             out.append(
-                f'<polygon points="{up}" fill="none" stroke="#ff9800" '
+                f'<polygon points="{up}" fill="none" stroke="{T["active"]}" '
                 'stroke-width="10" stroke-opacity="0.85" filter="url(#glow)"/>'
             )
         out.append(
@@ -488,19 +559,25 @@ def _render_iso(
         )
         labels.append((cx, cy - h, name, active))
 
-    route: list[tuple[float, float]] = []
-    frame = None
-    swath_px = 0.0
-    if trail:
-        cells = trail_cells(data, trail)
-        for p in cells:
+    def on_screen(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        """Route points (metres) to screen positions on the room tops."""
+        res = []
+        for p in trail_cells(data, points):
             p = (-p[0] if flip_x else p[0], -p[1])
             if rotate:
                 p = _rotate(p, rotate)
             p = _rotate(p, yaw)
             p = (p[0], p[1] * pitch)
             x, y = tx(p)
-            route.append((x, y - h_low))
+            res.append((x, y - h_low))
+        return res
+
+    route: list[tuple[float, float]] = []
+    frame = None
+    swath_px = 0.0
+    truck_at: tuple[float, float, float] | None = None  # x, y, heading
+    if trail:
+        route = on_screen(trail)
         if len(route) >= 2:
             pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in route)
             frame = grid_frame(data)
@@ -511,12 +588,12 @@ def _render_iso(
                 swath_px = coverage_swath / frame[0] * scale * (1 + pitch) / 2
                 # Swath for coverage, with the thin route drawn over it.
                 layers = (
-                    ("#26c6da", max(swath_px, 3.0), 0.45),
+                    (T["swath"], max(swath_px, 3.0), 0.45),
                     ("#10131a", 4, 0.45),
-                    ("#4dd0e1", 2, 0.95),
+                    (T["route"], 2, 0.95),
                 )
             else:
-                layers = (("#10131a", 5, 0.55), ("#4dd0e1", 2.5, 0.95))
+                layers = (("#10131a", 5, 0.55), (T["route"], 2.5, 0.95))
             for stroke, sw, op in layers:
                 out.append(
                     f'<polyline points="{pts}" fill="none" stroke="{stroke}" '
@@ -526,13 +603,21 @@ def _render_iso(
             sx, sy = route[0]
             ex, ey = route[-1]
             out.append(
-                f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="6" fill="#66bb6a" '
+                f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="6" fill="{T["start"]}" '
                 'stroke="#10131a" stroke-width="2"/>'
             )
-            out.append(
-                f'<circle cx="{ex:.1f}" cy="{ey:.1f}" r="6" fill="#ef5350" '
-                'stroke="#10131a" stroke-width="2"/>'
-            )
+            if T["truck"]:
+                truck_at = (ex, ey, _heading(route, pitch))
+            else:
+                out.append(
+                    f'<circle cx="{ex:.1f}" cy="{ey:.1f}" r="6" fill="{T["end"]}" '
+                    'stroke="#10131a" stroke-width="2"/>'
+                )
+    elif robot_at and T["truck"]:
+        placed_route = on_screen(robot_at)
+        if len(placed_route) >= 2:
+            ex, ey = placed_route[-1]
+            truck_at = (ex, ey, _heading(placed_route, pitch))
 
     font = max(11, min(18, int(width / 45)))
     # Visible window: the whole canvas, or the route's bounding box.
@@ -561,23 +646,27 @@ def _render_iso(
         # Fill the background over the whole window, even past the canvas.
         out[2] = (
             f'<rect x="{vx:.1f}" y="{vy:.1f}" width="{vw:.1f}" '
-            f'height="{vh:.1f}" fill="#1f2430"/>'
+            f'height="{vh:.1f}" fill="{T["bg"]}"/>'
         )
     zoom = vw / width  # SVG units per output pixel; keeps text a fixed size
+    if truck_at:
+        # About 64 output pixels long whatever the crop, so it reads as a marker.
+        out.append(_truck_marker(*truck_at, pitch=pitch, length=64 * zoom, halo=T["active"]))
     if caption:
         cf = (font + 2) * zoom
         out.append(
             f'<text x="{vx + margin * zoom:.1f}" y="{vy + vh - margin * zoom / 2:.1f}" '
             'font-family="sans-serif" font-size="'
-            f'{cf:.1f}" font-weight="700" fill="#e6e9ef">'
+            f'{cf:.1f}" font-weight="700" fill="{T["caption"]}">'
             f"{html.escape(caption)}</text>"
         )
     font = font * zoom
     for cx, cy, name, active in labels:
         out.append(
             f'<text x="{cx:.1f}" y="{cy:.1f}" font-family="sans-serif" '
-            f'font-size="{font:.1f}" font-weight="700" fill="#1f2430" '
-            'text-anchor="middle" dominant-baseline="middle" stroke="#ffffff" '
+            f'font-size="{font:.1f}" font-weight="700" fill="{T["label"]}" '
+            'text-anchor="middle" dominant-baseline="middle" '
+            f'stroke="{T["label_stroke"]}" '
             f'stroke-width="{3 * zoom:.2f}" stroke-opacity="0.85" paint-order="stroke">'
             f"{html.escape(name)}</text>"
         )
