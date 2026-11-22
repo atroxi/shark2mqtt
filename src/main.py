@@ -137,7 +137,14 @@ def _attach_run_info(device: SharkVacuum, run: RunPath) -> RunPath:
     """Add rooms/mode to a freshly decoded run, persisting them by start time."""
     info = _outings.get(device.dsn)
     start = run.start_ts or 0
-    if info and info.get("rooms") and info["first_seen"] >= start - 600:
+    # The outing must have been seen while this run was going (10 min slack
+    # either side). Without the upper bound, a restart during a later clean
+    # would label this finished run with the later clean's rooms.
+    end = start + (run.minutes or 180) * 60
+    if (
+        info and info.get("rooms")
+        and start - 600 <= info["first_seen"] <= end + 600
+    ):
         saved = {"start_ts": run.start_ts, "rooms": info["rooms"], "mode": info["mode"]}
         try:
             with open(_run_info_path(device.dsn), "w", encoding="utf-8") as fh:
