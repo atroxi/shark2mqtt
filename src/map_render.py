@@ -208,6 +208,7 @@ def render_svg(
     trail: list[tuple[float, float]] | None = None,
     coverage_swath: float | None = None,
     caption: str | None = None,
+    crop_to_trail: bool = False,
 ) -> str:
     """Return an SVG string for the map.
 
@@ -221,6 +222,9 @@ def render_svg(
     coverage_swath: with trail, draw the route as a swath this wide (metres)
         on dimmed rooms, as a "cleaned coverage" picture instead of a thin line.
     caption: short text drawn in the bottom-left corner (iso view only).
+    crop_to_trail: with trail, zoom the picture to the area the route covers
+        (iso view only). The output keeps ``width``; its height follows the
+        cropped area.
     """
     if rotate is None:
         mr = data.get("map_rotation")
@@ -231,6 +235,7 @@ def render_svg(
             data, width=width, rotate=rotate, flip_x=flip_x, yaw=yaw,
             pitch=pitch, margin=margin, highlight=highlight, trail=trail,
             coverage_swath=coverage_swath, caption=caption,
+            crop_to_trail=crop_to_trail,
         )
 
     shapes: list[tuple[str, str, list[tuple[float, float]]]] = []
@@ -351,6 +356,7 @@ def _render_iso(
     trail: list[tuple[float, float]] | None = None,
     coverage_swath: float | None = None,
     caption: str | None = None,
+    crop_to_trail: bool = False,
 ) -> str:
     rooms: list[tuple[str, list[tuple[float, float]]]] = []
     nogos: list[list[tuple[float, float]]] = []
@@ -482,9 +488,11 @@ def _render_iso(
         )
         labels.append((cx, cy - h, name, active))
 
+    route: list[tuple[float, float]] = []
+    frame = None
+    swath_px = 0.0
     if trail:
         cells = trail_cells(data, trail)
-        route = []
         for p in cells:
             p = (-p[0] if flip_x else p[0], -p[1])
             if rotate:
@@ -501,7 +509,12 @@ def _render_iso(
                 # width: swath in grid cells x px-per-cell, softened for the
                 # vertical squash of the iso view.
                 swath_px = coverage_swath / frame[0] * scale * (1 + pitch) / 2
-                layers = (("#26c6da", max(swath_px, 3.0), 0.7),)
+                # Swath for coverage, with the thin route drawn over it.
+                layers = (
+                    ("#26c6da", max(swath_px, 3.0), 0.45),
+                    ("#10131a", 4, 0.45),
+                    ("#4dd0e1", 2, 0.95),
+                )
             else:
                 layers = (("#10131a", 5, 0.55), ("#4dd0e1", 2.5, 0.95))
             for stroke, sw, op in layers:
@@ -522,19 +535,50 @@ def _render_iso(
             )
 
     font = max(11, min(18, int(width / 45)))
+    # Visible window: the whole canvas, or the route's bounding box.
+    vx, vy, vw, vh = 0.0, 0.0, float(width), float(height)
+    if crop_to_trail and trail and len(route) >= 2:
+        pad = max(margin * 2, swath_px + margin)
+        x0 = min(x for x, _ in route) - pad
+        x1 = max(x for x, _ in route) + pad
+        y0 = min(y for _, y in route) - pad
+        y1 = max(y for _, y in route) + pad + font * 2  # room for the caption
+        # Don't zoom in past 3x, so a short run still shows its surroundings.
+        min_w = width / 3
+        if x1 - x0 < min_w:
+            cx_ = (x0 + x1) / 2
+            x0, x1 = cx_ - min_w / 2, cx_ + min_w / 2
+        min_h = min_w * 0.45
+        if y1 - y0 < min_h:
+            cy_ = (y0 + y1) / 2
+            y0, y1 = cy_ - min_h / 2, cy_ + min_h / 2
+        vx, vy, vw, vh = x0, y0, x1 - x0, y1 - y0
+        out_h = int(round(vh * width / vw))
+        out[0] = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
+            f'height="{out_h}" viewBox="{vx:.1f} {vy:.1f} {vw:.1f} {vh:.1f}">'
+        )
+        # Fill the background over the whole window, even past the canvas.
+        out[2] = (
+            f'<rect x="{vx:.1f}" y="{vy:.1f}" width="{vw:.1f}" '
+            f'height="{vh:.1f}" fill="#1f2430"/>'
+        )
+    zoom = vw / width  # SVG units per output pixel; keeps text a fixed size
     if caption:
+        cf = (font + 2) * zoom
         out.append(
-            f'<text x="{margin}" y="{height - margin / 2:.0f}" '
+            f'<text x="{vx + margin * zoom:.1f}" y="{vy + vh - margin * zoom / 2:.1f}" '
             'font-family="sans-serif" font-size="'
-            f'{font + 2}" font-weight="700" fill="#e6e9ef">'
+            f'{cf:.1f}" font-weight="700" fill="#e6e9ef">'
             f"{html.escape(caption)}</text>"
         )
+    font = font * zoom
     for cx, cy, name, active in labels:
         out.append(
             f'<text x="{cx:.1f}" y="{cy:.1f}" font-family="sans-serif" '
-            f'font-size="{font}" font-weight="700" fill="#1f2430" '
+            f'font-size="{font:.1f}" font-weight="700" fill="#1f2430" '
             'text-anchor="middle" dominant-baseline="middle" stroke="#ffffff" '
-            f'stroke-width="3" stroke-opacity="0.85" paint-order="stroke">'
+            f'stroke-width="{3 * zoom:.2f}" stroke-opacity="0.85" paint-order="stroke">'
             f"{html.escape(name)}</text>"
         )
     out.append("</svg>")

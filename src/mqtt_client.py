@@ -512,7 +512,8 @@ class MqttClient:
         """Publish the last clean's summary sensors and coverage picture.
 
         Sensors: start time, duration, cleaned area. The coverage image is the
-        floor plan with the robot's route drawn as a 0.3 m swath. Only
+        floor plan with the robot's route drawn as a 0.3 m swath plus the
+        route line, cropped to the area the route covers. Only
         republished when the run (or map) changes. Failures are logged and
         never affect the poll loop.
         """
@@ -597,6 +598,7 @@ class MqttClient:
                     bits.append(f"{run.area_m2:.1f} m²")
                 svg = render_bytes(
                     mard_body, trail=run.points, coverage_swath=0.3,
+                    crop_to_trail=True,
                     caption="Last clean: " + ", ".join(bits) if bits else None,
                 )
                 await self._publish(

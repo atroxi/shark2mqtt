@@ -97,9 +97,33 @@ def test_render_coverage_swath_and_caption():
         mard, trail=[(-8.0, 0.0), (-7.0, 0.5), (-6.0, 0.0)],
         coverage_swath=0.3, caption="Last clean: 21 min",
     )
-    assert svg.count("<polyline") == 1  # a single swath stroke, no thin line
+    assert svg.count("<polyline") == 3  # swath, then outline + route line on top
     assert "#26c6da" in svg
+    assert svg.count("<circle") == 2  # start and end markers
     assert "Last clean: 21 min" in svg
+
+
+def _viewbox(svg: str) -> list[float]:
+    import re
+
+    return [float(v) for v in re.search(r'viewBox="([^"]+)"', svg).group(1).split()]
+
+
+def test_render_coverage_crop_to_trail():
+    mard = _mard()
+    trail = [(-8.0, 0.0), (-7.0, 0.5), (-6.0, 0.0)]
+    full = render_svg(mard, trail=trail, coverage_swath=0.3, caption="x")
+    cropped = render_svg(
+        mard, trail=trail, coverage_swath=0.3, caption="x", crop_to_trail=True,
+    )
+    fx, fy, fw, fh = _viewbox(full)
+    cx, cy, cw, ch = _viewbox(cropped)
+    assert (fx, fy) == (0, 0)
+    assert cw < fw  # zoomed in on the route
+    assert cw >= fw / 3 - 0.1  # but never more than 3x
+    assert 'width="800"' in cropped  # output width unchanged
+    # Without a trail, crop_to_trail is a no-op.
+    assert render_svg(mard, crop_to_trail=True) == render_svg(mard)
 
 
 def test_mode_label():
