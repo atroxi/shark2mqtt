@@ -92,17 +92,26 @@ class TestDockAndMaintenanceProperties:
         assert vac.is_evacuating is True
         assert vac.dock_error_code == 3
         assert vac.warning_code == 7
+        assert vac.warning_active is True
         assert vac.extended_error_code == "E-42"
         assert vac.run_time_cumulative == 117
         assert vac.replace_battery is True
         assert vac.schedule == {"Monday": {"value": []}}
+
+    def test_ignored_warning_code_is_not_active(self):
+        data = make_skegox_device()
+        data["shadow"]["properties"]["reported"]["Warning_Code"] = {"value": 43}
+        vac = SharkVacuum.from_skegox(data)
+        assert vac.warning_code == 43  # raw code still reported
+        assert vac.warning_active is False
+        assert make_vacuum().warning_active is False  # code 0
 
     def test_attributes_payload_includes_new_fields(self):
         vac = make_vacuum()
         attrs = vac.to_attributes_payload()
         for key in (
             "is_evacuating", "evacuate_state", "evacuate_resume_status",
-            "dock_error_code", "dock_knob_status", "warning_code",
+            "dock_error_code", "dock_knob_status", "warning_code", "warning_active",
             "extended_error_code", "run_time_cumulative", "replace_battery",
             "recommend_rest_and_recharge",
         ):

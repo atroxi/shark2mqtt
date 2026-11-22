@@ -33,6 +33,7 @@ from .const import (
     PROP_GET_RUN_TIME_CUMULATIVE,
     PROP_GET_SCHEDULE,
     PROP_GET_WARNING_CODE,
+    IGNORED_WARNING_CODES,
 )
 
 logger = logging.getLogger(__name__)
@@ -366,6 +367,12 @@ class SharkVacuum:
         return self._get_int_prop(PROP_GET_WARNING_CODE)
 
     @property
+    def warning_active(self) -> bool:
+        """True for a warning worth flagging: non-zero and not ignored."""
+        code = self.warning_code
+        return code != 0 and code not in IGNORED_WARNING_CODES
+
+    @property
     def extended_error_code(self) -> str:
         return str(self._get_prop(PROP_GET_EXTENDED_ERROR_CODE, "") or "")
 
@@ -448,6 +455,7 @@ class SharkVacuum:
             "dock_error_code": self.dock_error_code,
             "dock_knob_status": self.dock_knob_status,
             "warning_code": self.warning_code,
+            "warning_active": self.warning_active,
             "extended_error_code": self.extended_error_code,
             "run_time_cumulative": self.run_time_cumulative,
             "replace_battery": self.replace_battery,

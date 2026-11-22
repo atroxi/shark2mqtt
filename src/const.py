@@ -117,6 +117,10 @@ PROP_GET_DEVICE_MODEL_NUMBER = "GET_Device_Model_Number"
 PROP_GET_ROBOT_FIRMWARE_VERSION = "GET_Robot_Firmware_Version"
 PROP_GET_FAN_JET_SETTING = "GET_FanJetSetting"
 PROP_GET_WARNING_CODE = "GET_Warning_Code"
+# Warning codes the robot reports but the Shark app doesn't surface, so they
+# shouldn't turn the HA Warning sensor on. 43 is set around the start of most
+# cleans and clears on its own hours later.
+IGNORED_WARNING_CODES = frozenset({43})
 PROP_GET_EVACUATING = "GET_Evacuating"
 PROP_GET_EVACUATE = "GET_evacuate"
 PROP_GET_EVACUATE_RESUME_STATUS = "GET_evacuate_resume_status"

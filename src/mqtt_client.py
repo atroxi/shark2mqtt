@@ -276,7 +276,7 @@ class MqttClient:
                 "unique_id": f"{uid}_warning",
                 "object_id": f"{slug}_warning",
                 "state_topic": f"{self._prefix}/{dsn}/attributes",
-                "value_template": "{{ value_json.warning_code != 0 }}",
+                "value_template": "{{ value_json.warning_active }}",
                 "payload_on": True,
                 "payload_off": False,
                 "device_class": "problem",
