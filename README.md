@@ -75,10 +75,59 @@ volumes:
 | `POLL_INTERVAL_ACTIVE` | No | `20` | Polling interval while cleaning |
 | `RUN_TRAIL` | No | `true` | Publish last-clean sensors (start, duration, area, rooms) and a coverage image showing the route, cropped to the area cleaned |
 | `LIVE_LOCATION` | No | `false` | Experimental: set the shadow's `live_location_switch` when the robot leaves the dock and log `live_location` changes (use with `LOG_LEVEL=DEBUG` to capture the payload) |
+
+| `PAUSE_OPERATING_MODE` | No | `1` | `Operating_Mode` value sent for pause: `1` or `0`. Some models ignore `1`; `0` is also "stop" on many models, so test it first |
+| `BROWSER_LOGIN` | No | `true` | Set `false` to never launch the automated browser login. A missing or expired token then logs a "Shark login needed" error instead (see [Authentication](#authentication)) |
 | `TOKEN_DIR` | No | `/data` | Directory for persisted auth tokens |
 | `LOG_LEVEL` | No | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
+| `NO_MOP_ROBOTS` | No | | Comma-separated robot names or DSNs that have **no** mop. Hides water flow and Wet/Dry/Deep even if auto-detection thinks otherwise |
+| `MOP_ROBOTS` | No | | Comma-separated robot names or DSNs that **do** mop, for when auto-detection misses one |
+| `AYLA_MERGE` | No | `false` | Half-migrated accounts: also publish robots that are only on the older Ayla backend (see [#46](https://github.com/CamSoper/shark2mqtt/issues/46)) |
+| `MAP_IMAGE` | No | `true` | Publish the floor plan image entity (see [Floor plan](#floor-plan)) |
+| `MAP_SHOW_SCAN` | No | `false` | Accepted for compatibility; currently has no effect (the 3D map doesn't draw the floor scan) |
 
 See [`config.example.env`](config.example.env) for a ready-to-edit template.
+
+### Docker secrets
+
+Docker Compose and Swarm can provide credentials as files mounted in `/run/secrets`.
+Use the existing environment variable names as the secret file names, such as
+`SHARK_PASSWORD` and `MQTT_PASSWORD`. No `_FILE` variables or entrypoint changes
+are needed.
+
+Configuration precedence is **environment variables > `.env` > Docker secrets**.
+To use a secret, omit the corresponding variable from the environment and any
+`.env` file entirely. Even an empty environment variable overrides a secret.
+
+For a Swarm stack, first create `SHARK_PASSWORD` and `MQTT_PASSWORD` as external
+Docker secrets, then attach them to the service:
+
+```yaml
+services:
+  shark2mqtt:
+    image: ghcr.io/camsoper/shark2mqtt:latest
+    environment:
+      SHARK_USERNAME: user@example.com
+      MQTT_HOST: mqtt.example.com
+      MQTT_USERNAME: shark2mqtt
+    secrets:
+      - SHARK_PASSWORD
+      - MQTT_PASSWORD
+    volumes:
+      - shark2mqtt_data:/data
+
+secrets:
+  SHARK_PASSWORD:
+    external: true
+  MQTT_PASSWORD:
+    external: true
+
+volumes:
+  shark2mqtt_data:
+```
+
+The running image must include Docker secrets support; rebuild from this source
+until it is included in a published image.
 
 ## Authentication
 
@@ -108,6 +157,8 @@ Cloudflare's bot detection occasionally flags the automated browser on some host
 
 3. Start the service normally. It will use the saved refresh token and skip the browser flow entirely.
 
+If you always supply tokens this way, set `BROWSER_LOGIN=false` so the service never tries the automated login itself. When the token stops working it logs "Shark login needed" instead. Copy in a fresh `shark2mqtt_tokens.json` and restart.
+
 The refresh token is long-lived, so once you have a working `shark2mqtt_tokens.json` the browser flow shouldn't be needed again unless SharkNinja revokes the session (e.g. after a password change).
 
 Repeated failed attempts can temporarily lock your SharkNinja account, so if the challenge is failing, stop the retry loop (set restart policy to `no` or use `--auth-once`) before trying again.
@@ -123,7 +174,7 @@ This one is a different animal from the Turnstile problem above, and the message
 
 That combination means Auth0's risk-based bot detection has flagged the *automated sign-in pattern*, not your account. There is nothing wrong with your credentials and nothing to unlock. Thanks to @dewbot6 for diagnosing this in [#38](https://github.com/CamSoper/shark2mqtt/issues/38).
 
-**What to do:** stop the retry loop and wait it out. Set the restart policy to `no` (or stop the add-on) and leave it alone for several hours -- overnight is a reasonable first attempt. Retrying against an already-flagged pattern tends to extend the block rather than clear it.
+**What to do:** stop the retry loop and wait it out. Set the restart policy to `no` (or stop the add-on) and leave it alone. In the one case we have data on ([#38](https://github.com/CamSoper/shark2mqtt/issues/38)) the block took about 10 days to clear, after which a normal restart logged in cleanly. Try again every day or two rather than assuming it's permanent. Retrying against an already-flagged pattern tends to extend the block rather than clear it.
 
 While you're waiting, it's worth confirming this isn't just a dead refresh token, which produces a similar "vacuum went unavailable but the app works fine" symptom. Look for this in the logs:
 
@@ -150,10 +201,48 @@ Each vacuum is automatically discovered by Home Assistant with the following ent
 | `button.<name>_clean_<room>` | Button | One-tap room cleaning (one per room) |
 | `select.<name>_clean_mode` | Select | Normal or Matrix (double-pass) cleaning mode |
 | `select.<name>_water_flow` | Select | Mop water flow level (vac+mop models only) |
+| `binary_sensor.<name>_clean_tank_empty` | Binary Sensor | Base's clean water tank empty or removed (mop-washing bases only) |
+| `binary_sensor.<name>_dirty_tank_full` | Binary Sensor | Base's dirty water tank full or removed (mop-washing bases only) |
+| `image.<name>_map` | Image | Angled 3D floor plan; rooms being cleaned are raised and highlighted |
+| `image.<name>_last_clean_coverage` | Image | The last clean's route and cleaned swath, cropped to the area covered (`RUN_TRAIL`) |
+| `sensor.<name>_last_clean_start` / `_duration` / `_area` / `_rooms` | Sensor | Summary of the last clean (`RUN_TRAIL`) |
+| `sensor.<name>_sys_st` | Sensor | Diagnostic: the robot's `sys_st` system status code (models that report `Operating_Mode_Ex` only) |
+| `binary_sensor.<name>_job_active` | Binary Sensor | Diagnostic: on while a clean job exists, including while paused (models that report `AreasToClean_V3` only) |
 
-Room buttons and the clean mode select appear automatically when room data is available from the Shark cloud. The water flow select appears only on models that report `Flow_Mode` -- i.e. those with a mop tank -- so vacuum-only models won't get a control their hardware ignores.
+Room buttons and the clean mode select appear automatically when room data is available from the Shark cloud. The water flow select appears on models that report `MopPlateAttached`, and the Wet/Dry clean mode plus Deep button on models that report a real `CleaningParameters` value. That's auto-detection from shadow fields, and it isn't perfect: some vacuum-only models (a UR2360EEUS, for one) carry mop fields too. If a robot gets mop controls it can't use, or misses ones it should have, list it in `NO_MOP_ROBOTS` or `MOP_ROBOTS`.
+
+The tank sensors appear only on robots whose shadow reports `DockSensorData` (bases that wash the mop and refill the robot). The base only updates them while the robot is docked, so expect a change to show up at the next poll after the robot returns.
+
+On robots that report both `Operating_Mode_Ex` (with `sys_st`) and `AreasToClean_V3`, such as the UR2850ZEUS, the vacuum state comes from `sys_st` and the current job rather than `DockedStatus`, `Charging_Status` and `Operating_Mode`, which can lag or go stale on those models. Fast polling also stays on while a job exists. Other models keep the existing state logic.
 
 An error device trigger fires when a new error is detected, usable in HA automations.
+
+### Floor plan
+
+The `image.<name>_map` entity is drawn from the room file the Shark app uses
+(`MARD`, which shark2mqtt already downloads for room names): an angled, extruded
+view of each room in its own colour, labelled with its name. Rooms being cleaned
+are raised and highlighted in orange. The canvas size and room positions never
+change, so a `picture-elements` card can overlay fixed tap targets on it.
+
+With `RUN_TRAIL=true` (the default), shark2mqtt also fetches the route the robot
+uploads after each clean and publishes `image.<name>_last_clean_coverage`: the
+route line over a swath the width of the robot, cropped to the area it covered,
+with the duration and area as a caption. The last-clean sensors come from the
+same file.
+
+Both are SVGs served by Home Assistant like any other image entity, so they're
+only visible to signed-in users. Show one with a picture-entity card:
+
+```yaml
+type: picture-entity
+entity: image.<name>_map
+show_name: false
+show_state: false
+```
+
+Currently drawn for accounts on the SharkNinja (skegox) API, which covers EU
+accounts and migrated US ones. Set `MAP_IMAGE=false` to turn the floor plan off.
 
 ### Vacuum States
 

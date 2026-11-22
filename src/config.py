@@ -1,11 +1,13 @@
-"""Configuration via environment variables."""
+"""Configuration via environment variables, .env, and Docker secrets."""
+
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
+    """Application settings loaded from environment variables and secret files."""
 
     # Shark account
     shark_username: str
@@ -26,8 +28,9 @@ class Settings(BaseSettings):
     poll_interval: int = 300
     poll_interval_active: int = 20
 
-    # Draw the robot's last cleaning route on the map image. The robot uploads
-    # the route when a clean finishes; it is fetched whenever it changes.
+    # Publish the last clean's coverage image (its route) and summary sensors.
+    # The robot uploads the route when a clean finishes; it is fetched
+    # whenever it changes.
     run_trail: bool = True
 
     # Experimental: ask the robot to stream its live position while it is
@@ -35,14 +38,45 @@ class Settings(BaseSettings):
     # logged at DEBUG so the format can be worked out.
     live_location: bool = False
 
+    # Operating_Mode value sent for HA's pause command. 1 (PAUSE) is what
+    # most models expect. Some models ignore 1 and report 0 while paused
+    # from the Shark app, so this lets those users try 0.
+    pause_operating_mode: int = Field(default=1, ge=0, le=1)
+
+    # When false, never launch the automated Chromium login. An expired or
+    # missing token then fails with a clear "log in again" error instead,
+    # for setups where tokens come from a manual login.
+    browser_login: bool = True
+
     # Token persistence
     token_dir: str = "/data"
 
     # Logging
     log_level: str = "INFO"
 
+    # Floor plan image entity (rendered from the robot's MARD room file)
+    map_image: bool = True
+    # Accepted for compatibility (the add-on passes it); the 3D map renderer
+    # doesn't draw the floor scan, so it currently has no effect.
+    map_show_scan: bool = False
+
+    # Also publish Ayla-only robots on accounts where skegox has others
+    # (half-migrated accounts, issue #46). Off by default.
+    ayla_merge: bool = False
+
+    # Mop capability overrides, comma-separated robot names or DSNs
+    # (case-insensitive). Auto-detection reads shadow fields that some
+    # vacuum-only models report too, so these force it either way.
+    mop_robots: str = ""
+    no_mop_robots: str = ""
+
     # Operation modes
     auth_once: bool = False
     offline: bool = False
 
-    model_config = {"env_file": ".env", "env_prefix": "", "case_sensitive": False}
+    model_config = {
+        "env_file": ".env",
+        "env_prefix": "",
+        "case_sensitive": False,
+        "secrets_dir": "/run/secrets" if Path("/run/secrets").is_dir() else None,
+    }
