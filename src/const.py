@@ -118,8 +118,10 @@ PROP_GET_ROBOT_FIRMWARE_VERSION = "GET_Robot_Firmware_Version"
 PROP_GET_FAN_JET_SETTING = "GET_FanJetSetting"
 PROP_GET_WARNING_CODE = "GET_Warning_Code"
 # Warning codes the robot reports but the Shark app doesn't surface, so they
-# shouldn't turn the HA Warning sensor on. 43 is set around the start of most
-# cleans and clears on its own hours later.
+# shouldn't turn the HA Warning sensor on. 43 is "Refill Pump Overcurrent" on
+# the RV2800 series (see RV2800_ERROR_CODES). On an RV2820ZEUS it appears
+# around the start of most cleans, including vacuum-only ones, and clears on
+# its own hours later. Remove it here if you rely on mopping and want to see it.
 IGNORED_WARNING_CODES = frozenset({43})
 PROP_GET_EVACUATING = "GET_Evacuating"
 PROP_GET_EVACUATE = "GET_evacuate"
@@ -168,4 +170,67 @@ ERROR_CODES: dict[int, str] = {
     26: "Dustbin blockage",
     40: "Dustbin is blocked",
     48: "Mop pad missing",  # reported on RV2820YEUS (issue #27)
+}
+
+# RV2800-series (PowerDetect NeverTouch) codes. Several numbers mean something
+# different here than in ERROR_CODES above (e.g. 21, 23, 26), so this table is
+# used only for these models. Source: SharkNinja support article "RV2800
+# Series Shark POWERDETECT NeverTouch Base Robot Vacuum - Robot Error Codes"
+# (published 2026-08-20). Where the article lists a number twice, the entry
+# with its own dedicated article wins.
+RV2800_MODELS = frozenset({
+    "RV2800ZE", "RV2820ZE", "RV2820ZEUS", "RV2820ZECA", "RV2800YE",
+    "RV2820YE", "RV2820YEUS", "UR2860YS", "AV2810YS", "RV2820YECA",
+    "UR2850ZE", "UR2850ZEUS", "RV2810ZE", "RV2810ZEUS",
+})
+RV2800_ERROR_CODES: dict[int, str] = {
+    0: "No error",
+    2: "Side brush not spinning",
+    3: "Suction motor error",
+    4: "Brushroll motor overcurrent",
+    5: "Wheel overcurrent",
+    6: "Bumper error",
+    7: "Cliff sensor error",
+    9: "Dust cup error",
+    10: "Wheel drop error",
+    12: "Charging voltage error",
+    17: "Battery low",
+    18: "Wheel encoder failure",
+    19: "Boot-up error",
+    21: "Robot is stuck",
+    23: "Robot tank empty",
+    26: "Pad shift overcurrent",
+    27: "Inclination error",
+    30: "Cannot return to base",
+    37: "Dock charging overcurrent",
+    40: "Auto evacuation error",
+    42: "Fanjet motor broken",
+    43: "Refill pump overcurrent",
+    46: "Brushroll motor overcurrent",
+    47: "Active suspension error",
+    48: "Pad plate missing",
+    50: "Greywater evacuation overcurrent",
+    54: "Greywater evacuation overcurrent",
+    55: "Pad dry fan overcurrent",
+    56: "Refill pump broken",
+    58: "Remove pad plate",
+    59: "Shuttle motor overcurrent",
+    61: "Remove pad plate",
+    62: "Pad detach motor overcurrent",
+    69: "Robot tank cannot fill",
+    1005: "Boot-up error",
+    1023: "Suction motor broken",
+    1030: "Side brush motor broken",
+    1031: "Main brush motor broken",
+    1087: "Pad shift overcurrent",
+    1089: "Cannot return to base",
+    1094: "Dust cup error",
+    1095: "Battery low",
+    1097: "Robot is stuck",
+    1109: "Fanjet motor broken",
+    1164: "Shuttle motor broken",
+    1165: "Refill pump broken",
+    1166: "Pad detach motor broken",
+    1167: "Greywater pump broken",
+    1168: "Pad dry fan broken",
 }

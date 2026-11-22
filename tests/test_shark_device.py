@@ -106,6 +106,24 @@ class TestDockAndMaintenanceProperties:
         assert vac.warning_active is False
         assert make_vacuum().warning_active is False  # code 0
 
+    def test_rv2800_codes_use_their_own_table(self):
+        data = make_skegox_device()
+        reported = data["shadow"]["properties"]["reported"]
+        reported["Device_Model_Number"] = {"value": "RV2820ZEUS"}
+        reported["Error_Code"] = {"value": 21}
+        reported["Warning_Code"] = {"value": 43}
+        vac = SharkVacuum.from_skegox(data)
+        assert vac.error_text == "Robot is stuck"  # generic table says "Boot error"
+        assert vac.warning_text == "Refill pump overcurrent"
+        assert vac.code_text(1167) == "Greywater pump broken"
+
+    def test_other_models_keep_generic_table(self):
+        data = make_skegox_device()
+        data["shadow"]["properties"]["reported"]["Error_Code"] = {"value": 21}
+        vac = SharkVacuum.from_skegox(data)  # fixture model RV2001
+        assert vac.error_text == "Boot error"
+        assert vac.code_text(999) == "Unknown error (999)"
+
     def test_attributes_payload_includes_new_fields(self):
         vac = make_vacuum()
         attrs = vac.to_attributes_payload()

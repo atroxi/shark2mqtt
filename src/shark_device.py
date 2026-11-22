@@ -8,6 +8,8 @@ from typing import Any
 
 from .const import (
     ERROR_CODES,
+    RV2800_ERROR_CODES,
+    RV2800_MODELS,
     OPERATING_MODE_TO_HA_STATE,
     POWER_MODE_NAMES,
     OperatingMode,
@@ -253,7 +255,17 @@ class SharkVacuum:
 
     @property
     def error_text(self) -> str:
-        return ERROR_CODES.get(self.error_code, f"Unknown error ({self.error_code})")
+        return self.code_text(self.error_code)
+
+    @property
+    def warning_text(self) -> str:
+        return self.code_text(self.warning_code)
+
+    def code_text(self, code: int) -> str:
+        """Name an error/warning code, using the model's own table if known."""
+        if self.model_number.upper() in RV2800_MODELS and code in RV2800_ERROR_CODES:
+            return RV2800_ERROR_CODES[code]
+        return ERROR_CODES.get(code, f"Unknown error ({code})")
 
     @property
     def ha_state(self) -> str:
@@ -456,6 +468,7 @@ class SharkVacuum:
             "dock_knob_status": self.dock_knob_status,
             "warning_code": self.warning_code,
             "warning_active": self.warning_active,
+            "warning_text": self.warning_text,
             "extended_error_code": self.extended_error_code,
             "run_time_cumulative": self.run_time_cumulative,
             "replace_battery": self.replace_battery,

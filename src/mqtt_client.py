@@ -277,6 +277,11 @@ class MqttClient:
                 "object_id": f"{slug}_warning",
                 "state_topic": f"{self._prefix}/{dsn}/attributes",
                 "value_template": "{{ value_json.warning_active }}",
+                "json_attributes_topic": f"{self._prefix}/{dsn}/attributes",
+                "json_attributes_template": (
+                    "{{ {'code': value_json.warning_code,"
+                    " 'description': value_json.warning_text} | tojson }}"
+                ),
                 "payload_on": True,
                 "payload_off": False,
                 "device_class": "problem",
